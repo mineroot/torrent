@@ -3,6 +3,7 @@ package bencode
 import (
 	"fmt"
 	"io"
+	"unicode"
 )
 
 type String struct {
@@ -20,5 +21,11 @@ func (s *String) Encode(w io.Writer) error {
 }
 
 func (s *String) String() string {
+	for i := 0; i < len(s.val); i++ {
+		if s.val[i] > unicode.MaxASCII {
+			// print as bytes slice if not ascii
+			return fmt.Sprintf("%v", []byte(s.val))
+		}
+	}
 	return s.val
 }

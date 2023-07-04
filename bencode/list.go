@@ -43,11 +43,11 @@ func (l *List) printTree(indent, keyPrefix string) string {
 	for i, benType := range l.val {
 		switch t := benType.(type) {
 		case *Dictionary:
-			s += t.printTree(indent+"\t", keyPrefix+fmt.Sprintf("[%d].", i), t.val)
+			s += t.printTree(indent+"\t", "", t.val)
 		case *Integer:
-			s += fmt.Sprintf("%s%s  %d\n", indent, keyPrefix+fmt.Sprintf("[%d]", i), t.val)
+			s += fmt.Sprintf("%s%d\n", indent, t.val)
 		case *String:
-			s += fmt.Sprintf("%s%s\t%s\n", indent, fmt.Sprintf("[%d]", i), t.val)
+			s += fmt.Sprintf("%s%s\n", indent, t.String())
 		case *List:
 			s += t.printTree(indent+"\t", keyPrefix+fmt.Sprintf("[%d].", i))
 		}

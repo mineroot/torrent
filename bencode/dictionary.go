@@ -54,11 +54,11 @@ func (d *Dictionary) printTree(indent, keyPrefix string, val map[String]BenType)
 		s += fmt.Sprintf("%s%s\n", indent, keyPrefix+key.String())
 		switch t := benType.(type) {
 		case *Dictionary:
-			s += t.printTree(indent+"\t", keyPrefix+key.String()+".", t.val)
+			s += t.printTree(indent+"\t", "", t.val)
 		case *Integer:
 			s += fmt.Sprintf("%s  %d\n", indent+"\t", t.val)
 		case *String:
-			s += fmt.Sprintf("%s  %s\n", indent+"\t", t.val)
+			s += fmt.Sprintf("%s  %s\n", indent+"\t", t.String())
 		case *List:
 			s += t.printTree(indent+"\t", keyPrefix+key.String()+".")
 		}
