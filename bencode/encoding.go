@@ -2,12 +2,15 @@ package bencode
 
 import (
 	"bufio"
+	"errors"
+	"fmt"
 	"io"
+	"strconv"
 )
 
 type BenType interface {
+	fmt.Stringer
 	Encode(w io.Writer) error
-	Decode(r io.Reader) error
 }
 
 func Encode(w io.Writer, data []BenType) error {
@@ -20,54 +23,77 @@ func Encode(w io.Writer, data []BenType) error {
 	return nil
 }
 
-func Decode(r io.Reader) ([]BenType, error) {
+func Decode(r io.Reader) (BenType, error) {
 	reader := bufio.NewReader(r)
-	decoded := make([]BenType, 0, 512)
-	for {
-		b, _, err := reader.ReadRune()
-		if err == io.EOF {
-			return decoded, nil
-		}
+	b, err := reader.ReadByte()
+	if err != nil {
+		return nil, err
+	}
+	switch b {
+	case 'i':
+		intBuf, err := reader.ReadBytes('e')
 		if err != nil {
 			return nil, err
 		}
-		switch b {
-		case 'i':
-			if err = reader.UnreadByte(); err != nil {
-				return nil, err
-			}
-			integer := NewInteger(0)
-			if err = integer.Decode(reader); err != nil {
-				return nil, err
-			}
-			decoded = append(decoded, integer)
-		case 'l':
-			if err = reader.UnreadByte(); err != nil {
-				return nil, err
-			}
-			list := NewList(nil)
-			if err = list.Decode(reader); err != nil {
-				return nil, err
-			}
-			decoded = append(decoded, list)
-		case 'd':
-			if err = reader.UnreadByte(); err != nil {
-				return nil, err
-			}
-			dict := NewDictionary(nil)
-			if err = dict.Decode(reader); err != nil {
-				return nil, err
-			}
-			decoded = append(decoded, dict)
-		default:
-			if err = reader.UnreadByte(); err != nil {
-				return nil, err
-			}
-			str := NewString("")
-			if err = str.Decode(reader); err != nil {
-				return nil, err
-			}
-			decoded = append(decoded, str)
+		intBuf = intBuf[:len(intBuf)-1]
+		integerVal, err := strconv.ParseInt(string(intBuf), 10, 64)
+		if err != nil {
+			return nil, err
 		}
+		return NewInteger(integerVal), nil
+	case 'l':
+		list := NewList([]BenType{})
+		for {
+			c, err := reader.ReadByte()
+			if err == nil {
+				if c == 'e' {
+					return list, nil
+				}
+				_ = reader.UnreadByte()
+			}
+			value, err := Decode(reader)
+			if err != nil {
+				return nil, err
+			}
+			list.Add(value)
+		}
+	case 'd':
+		dict := NewDictionary(map[String]BenType{})
+		for {
+			c, err := reader.ReadByte()
+			if err == nil {
+				if c == 'e' {
+					return dict, nil
+				}
+				_ = reader.UnreadByte()
+			}
+			value, err := Decode(reader)
+			if err != nil {
+				return nil, err
+			}
+			key, ok := value.(*String)
+			if !ok {
+				return nil, errors.New("non-string dictionary key")
+			}
+			value, err = Decode(reader)
+			if err != nil {
+				return nil, err
+			}
+			dict.Add(*key, value)
+		}
+	default:
+		_ = reader.UnreadByte()
+		stringLengthBuffer, err := reader.ReadBytes(':')
+		if err != nil {
+			return nil, err
+		}
+		stringLengthBuffer = stringLengthBuffer[:len(stringLengthBuffer)-1]
+		stringLength, err := strconv.ParseInt(string(stringLengthBuffer), 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		buf := make([]byte, stringLength)
+		_, err = io.ReadFull(reader, buf)
+		return NewString(string(buf)), err
 	}
 }

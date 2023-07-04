@@ -1,7 +1,6 @@
 package bencode
 
 import (
-	"bufio"
 	"fmt"
 	"io"
 )
@@ -28,69 +27,30 @@ func (l *List) Encode(w io.Writer) error {
 	return err
 }
 
-func (l *List) Decode(r io.Reader) error {
-	l.val = make([]BenType, 0, 8)
-	reader := bufio.NewReader(r)
-	level := 0
-	expectList := true
-	for {
-		b, _, err := reader.ReadRune()
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		switch b {
-		case 'i':
-			if err = reader.UnreadByte(); err != nil {
-				return err
-			}
-			integer := NewInteger(0)
-			if err = integer.Decode(reader); err != nil {
-				return err
-			}
-			l.val = append(l.val, integer)
-		case 'l':
-			if expectList {
-				expectList = false
-				level++
-				break
-			}
-			if err = reader.UnreadByte(); err != nil {
-				return err
-			}
-			list := NewList(nil)
-			if err = list.Decode(reader); err != nil {
-				return err
-			}
-			l.val = append(l.val, list)
-		case 'd':
-			if err = reader.UnreadByte(); err != nil {
-				return err
-			}
-			dict := NewDictionary(nil)
-			if err = dict.Decode(reader); err != nil {
-				return err
-			}
-			l.val = append(l.val, dict)
-		case 'e':
-			level--
-			if level == 0 {
-				return nil
-			}
-			if level < 0 {
-				return fmt.Errorf("unexpected end")
-			}
-		default:
-			if err = reader.UnreadByte(); err != nil {
-				return err
-			}
-			str := NewString("")
-			if err = str.Decode(reader); err != nil {
-				return err
-			}
-			l.val = append(l.val, str)
+func (l *List) Add(item BenType) {
+	l.val = append(l.val, item)
+}
+
+func (l *List) String() (s string) {
+	for _, benType := range l.val {
+		s += fmt.Sprintf("\t%s\n", benType)
+	}
+	return
+}
+
+func (l *List) printTree(indent, keyPrefix string) string {
+	s := ""
+	for i, benType := range l.val {
+		switch t := benType.(type) {
+		case *Dictionary:
+			s += t.printTree(indent+"\t", keyPrefix+fmt.Sprintf("[%d].", i), t.val)
+		case *Integer:
+			s += fmt.Sprintf("%s%s  %d\n", indent, keyPrefix+fmt.Sprintf("[%d]", i), t.val)
+		case *String:
+			s += fmt.Sprintf("%s%s\t%s\n", indent, fmt.Sprintf("[%d]", i), t.val)
+		case *List:
+			s += t.printTree(indent+"\t", keyPrefix+fmt.Sprintf("[%d].", i))
 		}
 	}
+	return s
 }

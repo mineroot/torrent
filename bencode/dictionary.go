@@ -1,7 +1,6 @@
 package bencode
 
 import (
-	"bufio"
 	"fmt"
 	"io"
 	"sort"
@@ -41,91 +40,28 @@ func (d *Dictionary) Encode(w io.Writer) error {
 	return err
 }
 
-func (d *Dictionary) Decode(r io.Reader) error {
-	d.val = make(map[String]BenType)
-	reader := bufio.NewReader(r)
-	level := 0
-	expectKey := true
-	expectDict := true
-	var currentKey String
-	for {
-		b, _, err := reader.ReadRune()
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		switch b {
-		case 'i':
-			if expectKey {
-				return fmt.Errorf("dict key expected, got %c", b)
-			}
-			if err = reader.UnreadByte(); err != nil {
-				return err
-			}
-			integer := NewInteger(0)
-			if err = integer.Decode(reader); err != nil {
-				return err
-			}
-			d.val[currentKey] = integer
-			expectKey = !expectKey
-		case 'l':
-			if expectKey {
-				return fmt.Errorf("dict key expected, got %c", b)
-			}
-			if err = reader.UnreadByte(); err != nil {
-				return err
-			}
-			list := NewList(nil)
-			if err = list.Decode(reader); err != nil {
-				return err
-			}
-			d.val[currentKey] = list
-			expectKey = !expectKey
-		case 'd':
-			if expectDict { // detect first encounter,
-				expectDict = false
-				level++
-				break
-			}
-			if expectKey {
-				return fmt.Errorf("dict key expected, got %c", b)
-			}
-			if err = reader.UnreadByte(); err != nil {
-				return err
-			}
-			dict := NewDictionary(nil)
-			if err = dict.Decode(reader); err != nil {
-				return err
-			}
-			d.val[currentKey] = dict
-			expectKey = !expectKey
-		case 'e':
-			if expectKey && expectDict {
-				return fmt.Errorf("dict key expected, got %c", b)
-			}
-			level--
-			if level == 0 {
-				return nil
-			}
-			if level < 0 {
-				return fmt.Errorf("unexpected end")
-			}
-		default:
-			if err = reader.UnreadByte(); err != nil {
-				return err
-			}
-			str := NewString("")
-			if err = str.Decode(reader); err != nil {
-				return err
-			}
-			if expectKey {
-				currentKey = *str
-			} else {
-				d.val[currentKey] = str
-			}
-			expectKey = !expectKey
+func (d *Dictionary) Add(key String, value BenType) {
+	d.val[key] = value
+}
+
+func (d *Dictionary) String() (s string) {
+	return d.printTree("", "", d.val)
+}
+
+func (d *Dictionary) printTree(indent, keyPrefix string, val map[String]BenType) string {
+	s := ""
+	for key, benType := range val {
+		s += fmt.Sprintf("%s%s\n", indent, keyPrefix+key.String())
+		switch t := benType.(type) {
+		case *Dictionary:
+			s += t.printTree(indent+"\t", keyPrefix+key.String()+".", t.val)
+		case *Integer:
+			s += fmt.Sprintf("%s  %d\n", indent+"\t", t.val)
+		case *String:
+			s += fmt.Sprintf("%s  %s\n", indent+"\t", t.val)
+		case *List:
+			s += t.printTree(indent+"\t", keyPrefix+key.String()+".")
 		}
 	}
+	return s
 }

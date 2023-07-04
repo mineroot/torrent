@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"strings"
 	"testing"
 )
 
@@ -44,11 +43,6 @@ func TestList_Encode(t *testing.T) {
 			err := tt.decoded.Encode(buf)
 			require.NoError(t, err)
 			assert.Equal(t, tt.bencode, buf.String())
-
-			list := NewList(nil)
-			err = list.Decode(strings.NewReader(tt.bencode))
-			require.NoError(t, err)
-			assert.Equal(t, tt.decoded, list)
 		})
 	}
 }

@@ -5,7 +5,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"os"
-	"strings"
 	"testing"
 )
 
@@ -44,13 +43,9 @@ func TestEncode(t *testing.T) {
 }
 
 func TestDecode(t *testing.T) {
-	r := strings.NewReader("5:helloi123ed11:another keyd15:nested dict keyi321ee4:listl14:string in listi333923987eee")
-	_, err := Decode(r)
+	r, err := os.Open("testdata/torrent_test.torrent")
+	defer r.Close()
 	require.NoError(t, err)
-
-	f, err := os.Open("testdata/torrent_test.torrent")
-	defer f.Close()
-	require.NoError(t, err)
-	_, err = Decode(f)
+	_, err = Decode(r)
 	assert.NoError(t, err)
 }
