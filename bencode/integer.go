@@ -23,3 +23,7 @@ func (i *Integer) Encode(w io.Writer) error {
 func (i *Integer) String() string {
 	return strconv.FormatInt(i.val, 10)
 }
+
+func (i *Integer) Value() int64 {
+	return i.val
+}

@@ -44,6 +44,13 @@ func (d *Dictionary) Add(key String, value BenType) {
 	d.val[key] = value
 }
 
+func (d *Dictionary) Get(key string) BenType {
+	if v, ok := d.val[*NewString(key)]; ok {
+		return v
+	}
+	return nil
+}
+
 func (d *Dictionary) String() (s string) {
 	return d.printTree("", "", d.val)
 }

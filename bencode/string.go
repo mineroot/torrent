@@ -1,6 +1,7 @@
 package bencode
 
 import (
+	"encoding/hex"
 	"fmt"
 	"io"
 	"unicode"
@@ -20,11 +21,14 @@ func (s *String) Encode(w io.Writer) error {
 	return err
 }
 
+func (s *String) Value() string {
+	return s.val
+}
+
 func (s *String) String() string {
 	for i := 0; i < len(s.val); i++ {
 		if s.val[i] > unicode.MaxASCII {
-			// print as bytes slice if not ascii
-			return fmt.Sprintf("%v", []byte(s.val))
+			return hex.Dump([]byte(s.val))
 		}
 	}
 	return s.val
