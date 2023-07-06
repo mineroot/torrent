@@ -1,6 +1,9 @@
 package p2p
 
-import "net"
+import (
+	"fmt"
+	"net"
+)
 
 type ipv4 [net.IPv4len]byte
 
@@ -14,6 +17,10 @@ func ipv4FromNetIP(ip net.IP) ipv4 {
 type Peer struct {
 	IP   net.IP
 	Port uint16
+}
+
+func (p Peer) Address() string {
+	return fmt.Sprintf("%s:%d", p.IP, p.Port)
 }
 
 type Peers map[ipv4]Peer

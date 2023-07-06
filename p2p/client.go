@@ -3,59 +3,132 @@ package p2p
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
-	"fmt"
 	"io"
-	"net"
+	"log"
 	"net/http"
 	"sync"
 	"time"
 	"torrent/bencode"
 )
 
+const PeerIdSize = 20
+
+type PeerID [PeerIdSize]byte
+
+func MyPeerID() PeerID {
+	return PeerID([]byte("-GO0001-random_bytes"))
+}
+
 type Client struct {
 	httpClient *http.Client
 	torrent    *TorrentFile
-	lock       sync.RWMutex
-	peers      Peers
+	peersCh    chan Peers
+	pmsLock    sync.RWMutex
+	pms        PeerManagers
+	interval   time.Duration
 }
 
 func NewClient(torrent *TorrentFile) *Client {
 	return &Client{
 		httpClient: &http.Client{Timeout: 15 * time.Second},
 		torrent:    torrent,
-		peers:      make(Peers),
+		peersCh:    make(chan Peers, 1),
+		pms:        make(PeerManagers),
 	}
-}
-
-func (c *Client) PeerID() Hash {
-	return (Hash)([]byte("-GO0001-random_bytes"))
 }
 
 func (c *Client) Run(ctx context.Context) error {
 	err := c.trackerRequest(ctx, started)
 	if err != nil {
-		return err
+		log.Printf("failed to handle tracker request %s", err)
 	}
-	// TODO: start goroutine for sending regular requests
-	<-ctx.Done()
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go c.trackerRegularRequests(ctx, &wg)
+	go c.managePeers(ctx, &wg)
+	wg.Wait()
 	err = c.trackerStoppedRequest(ctx)
 	if err != nil {
 		return err
 	}
+	c.stop()
 	return ctx.Err()
+}
+
+func (c *Client) stop() {
+	c.pmsLock.RLock()
+	defer c.pmsLock.RUnlock()
+	for _, pm := range c.pms {
+		_ = pm.Close()
+	}
 }
 
 type event string
 
 const (
 	started   event = "started"
-	stopped         = "stopped"
+	regular         = ""
 	completed       = "completed"
+	stopped         = "stopped"
 )
 
+func (c *Client) trackerRegularRequests(ctx context.Context, wg *sync.WaitGroup) {
+	defer wg.Done()
+	ticker := time.NewTicker(c.interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			err := c.trackerRequest(ctx, regular)
+			if err != nil {
+				log.Printf("failed to handle tracker request %s", err)
+			}
+		case <-ctx.Done():
+			close(c.peersCh)
+			return
+		}
+	}
+}
+
+func (c *Client) managePeers(ctx context.Context, wg *sync.WaitGroup) {
+	defer wg.Done()
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case peers, ok := <-c.peersCh:
+			if !ok {
+				return
+			}
+			c.pmsLock.Lock()
+			for ip, peer := range peers {
+				_, ok = c.pms[ip]
+				if !ok {
+					pm := NewPeerManager(peer, c.torrent.InfoHash)
+					c.pms[ip] = pm
+					wg.Add(1)
+					go pm.Run(ctx, wg)
+				}
+			}
+			c.pmsLock.Unlock()
+		case <-ticker.C:
+			c.pmsLock.Lock()
+			before := len(c.pms)
+			for ip, pm := range c.pms {
+				if !pm.IsAlive() {
+					delete(c.pms, ip)
+				}
+			}
+			log.Printf("deleted %d peers, total peers now %d", before-len(c.pms), len(c.pms))
+			c.pmsLock.Unlock()
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
 func (c *Client) trackerRequest(ctx context.Context, event event) error {
-	url, err := c.torrent.buildTrackerURL(c.PeerID(), 6881, event)
+	url, err := c.torrent.buildTrackerURL(MyPeerID(), 6881, event)
 	if err != nil {
 		return err
 	}
@@ -85,13 +158,14 @@ func (c *Client) trackerRequest(ctx context.Context, event event) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("%+v\n", response)
+	c.interval = response.interval
+	c.peersCh <- response.peers
 
 	return nil
 }
 
 func (c *Client) trackerStoppedRequest(ctx context.Context) error {
-	url, err := c.torrent.buildTrackerURL(c.PeerID(), 6881, stopped)
+	url, err := c.torrent.buildTrackerURL(MyPeerID(), 6881, stopped)
 	if err != nil {
 		return err
 	}
@@ -104,63 +178,4 @@ func (c *Client) trackerStoppedRequest(ctx context.Context) error {
 	}
 	_, err = c.httpClient.Do(req)
 	return err
-}
-
-type trackerResponse struct {
-	failure     string
-	warning     string
-	interval    time.Duration
-	minInterval time.Duration
-	trackerId   string
-	peers       Peers
-}
-
-func (r *trackerResponse) unmarshal(benType bencode.BenType) error {
-	if r == nil {
-		panic("trackerResponse must be not nil")
-	}
-	dict, ok := benType.(*bencode.Dictionary)
-	if !ok {
-		return fmt.Errorf("response must be a dictionary")
-	}
-	failure, ok := dict.Get("failure").(*bencode.String)
-	if ok {
-		r.failure = failure.Value()
-		return fmt.Errorf("failure: %s", r.failure)
-	}
-	warning, ok := dict.Get("warning").(*bencode.String)
-	if ok {
-		r.warning = warning.Value()
-	}
-	interval, ok := dict.Get("interval").(*bencode.Integer)
-	if ok {
-		r.interval = time.Second * time.Duration(interval.Value())
-	}
-	minInterval, ok := dict.Get("minInterval").(*bencode.Integer)
-	if ok {
-		r.minInterval = time.Second * time.Duration(minInterval.Value())
-	}
-
-	peers, ok := dict.Get("peers").(*bencode.String)
-	if !ok {
-		return fmt.Errorf("peers must be bytes")
-	}
-	const peerSize = 6
-	peersBuf := []byte(peers.Value())
-	if len(peersBuf)%peerSize != 0 {
-		return fmt.Errorf("malformed peers bytes")
-	}
-	peersCount := len(peersBuf) / peerSize
-	r.peers = make(Peers, peersCount)
-	for i := 0; i < peersCount; i++ {
-		offset := i * peerSize
-		peer := peersBuf[offset : offset+peerSize]
-		ip := peer[:net.IPv4len]
-		r.peers[ipv4FromNetIP(ip)] = Peer{
-			IP:   ip,
-			Port: binary.BigEndian.Uint16(peer[net.IPv4len:]),
-		}
-	}
-
-	return nil
 }

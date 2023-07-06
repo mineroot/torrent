@@ -40,7 +40,7 @@ func Open(r io.Reader) (*TorrentFile, error) {
 	return torrent, nil
 }
 
-func (t *TorrentFile) buildTrackerURL(peerID Hash, port uint16, event event) (string, error) {
+func (t *TorrentFile) buildTrackerURL(peerID PeerID, port uint16, event event) (string, error) {
 	base, err := url.Parse(t.Announce)
 	if err != nil {
 		return "", err
@@ -54,6 +54,7 @@ func (t *TorrentFile) buildTrackerURL(peerID Hash, port uint16, event event) (st
 		"compact":    []string{"1"},
 		"left":       []string{strconv.Itoa(t.Length)},
 		"event":      []string{string(event)},
+		"numwant":    []string{"100"},
 	}
 	base.RawQuery = params.Encode()
 	return base.String(), nil
