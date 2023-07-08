@@ -3,7 +3,8 @@ package main
 import (
 	"context"
 	"errors"
-	"log"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"os"
 	"os/signal"
 	"sync"
@@ -12,14 +13,15 @@ import (
 )
 
 func main() {
+	l := log.Output(zerolog.ConsoleWriter{Out: os.Stderr}).With().Caller().Logger()
 	file, err := os.Open("testdata/debian-12.0.0-amd64-netinst.iso.torrent")
 	if err != nil {
-		log.Fatal(err)
+		l.Fatal().Err(err).Send()
 	}
 	defer file.Close()
 	torrent, err := p2p.Open(file)
 	if err != nil {
-		log.Fatal(err)
+		l.Fatal().Err(err).Send()
 	}
 	storage := p2p.NewStorage()
 	storage.Set(torrent.InfoHash, torrent)
@@ -30,6 +32,7 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	ctx = l.WithContext(ctx)
 
 	errCh := make(chan error, 1)
 	var wg sync.WaitGroup

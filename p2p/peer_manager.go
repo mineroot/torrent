@@ -4,8 +4,9 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"io"
-	"log"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -65,10 +66,7 @@ func NewPeerManager(storage StorageGetter, peer Peer, conn net.Conn) *PeerManage
 	return pm
 }
 
-func (pm *PeerManager) Run(ctx context.Context, wg *sync.WaitGroup) {
-	if !pm.isAlive.Load() {
-		panic("peer manager is not alive")
-	}
+func (pm *PeerManager) Run(ctx context.Context, wg *sync.WaitGroup, handshakeOkCh chan<- bool) {
 	defer wg.Done()
 	defer func() {
 		if pm.conn != nil {
@@ -76,20 +74,41 @@ func (pm *PeerManager) Run(ctx context.Context, wg *sync.WaitGroup) {
 		}
 		pm.isAlive.Store(false)
 	}()
+	if !pm.isAlive.Load() {
+		panic("peer manager is not alive")
+	}
+	l := log.Ctx(ctx).With().Str("remote_peer", pm.peer.Address()).Logger().
+		Hook(zerolog.HookFunc(func(e *zerolog.Event, _ zerolog.Level, _ string) {
+			infoHashStr := ""
+			if pm.peer.InfoHash != nil {
+				infoHashStr = pm.peer.InfoHash.String()
+			}
+			e.Str("info_hash", infoHashStr)
+		}))
+
+	var err error
 	if pm.conn == nil {
-		err := pm.sendHandshake(ctx)
+		// we initiate connection and send a handshake first
+		err = pm.sendHandshake(ctx)
 		if err != nil {
-			log.Printf("%s: unable to send handshake: %s", pm.peer.Address(), err)
-			return
+			err = fmt.Errorf("unable to send handshake too remote peer: %w", err)
 		}
 	} else {
-		err := pm.acceptHandshake()
+		// remote peer connected to us, and we are waiting for a handshake
+		err = pm.acceptHandshake()
 		if err != nil {
-			log.Printf("%s: unable to accept handshake: %s", pm.peer.Address(), err)
-			return
+			err = fmt.Errorf("unable to accept handshake from remote peer: %w", err)
 		}
 	}
-	log.Printf("%s: successful handshake", pm.peer.Address())
+	if handshakeOkCh != nil {
+		handshakeOkCh <- err == nil
+		close(handshakeOkCh)
+	}
+	if err != nil {
+		l.Error().Err(err).Send()
+		return
+	}
+	l.Info().Msg("successful handshake")
 
 	go pm.readMessages()
 	go pm.handleMessages()
