@@ -21,7 +21,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	client := p2p.NewClient(torrent)
+	storage := p2p.NewStorage()
+	storage.Set(torrent.InfoHash, torrent)
+	client := p2p.NewClient(storage)
 
 	exit := make(chan os.Signal, 1)
 	signal.Notify(exit, syscall.SIGINT, syscall.SIGTERM)

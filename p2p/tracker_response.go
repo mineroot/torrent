@@ -9,12 +9,19 @@ import (
 )
 
 type trackerResponse struct {
+	infoHash    Hash
 	failure     string
 	warning     string
 	interval    time.Duration
 	minInterval time.Duration
 	trackerId   string
 	peers       Peers
+}
+
+func newTrackerResponse(infoHash Hash) *trackerResponse {
+	return &trackerResponse{
+		infoHash: infoHash,
+	}
 }
 
 func (r *trackerResponse) unmarshal(benType bencode.BenType) error {
@@ -59,10 +66,10 @@ func (r *trackerResponse) unmarshal(benType bencode.BenType) error {
 	for i := 0; i < peersCount; i++ {
 		offset := i * peerSize
 		peer := peersBuf[offset : offset+peerSize]
-		ip := peer[:net.IPv4len]
-		r.peers[ipv4FromNetIP(ip)] = Peer{
-			IP:   ip,
-			Port: binary.BigEndian.Uint16(peer[net.IPv4len:]),
+		r.peers[i] = Peer{
+			InfoHash: &r.infoHash,
+			IP:       peer[:net.IPv4len],
+			Port:     binary.BigEndian.Uint16(peer[net.IPv4len:]),
 		}
 	}
 

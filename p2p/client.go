@@ -3,15 +3,19 @@ package p2p
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 	"torrent/bencode"
 )
 
 const PeerIdSize = 20
+const listenPort = 6881
 
 type PeerID [PeerIdSize]byte
 
@@ -20,47 +24,36 @@ func MyPeerID() PeerID {
 }
 
 type Client struct {
-	httpClient *http.Client
-	torrent    *TorrentFile
-	peersCh    chan Peers
-	pmsLock    sync.RWMutex
-	pms        PeerManagers
-	interval   time.Duration
+	httpClient    *http.Client
+	storage       *Storage
+	peersCh       chan Peers
+	pmsLock       sync.RWMutex
+	pms           PeerManagers
+	intervalsLock sync.RWMutex
+	intervals     map[Hash]time.Duration
 }
 
-func NewClient(torrent *TorrentFile) *Client {
+func NewClient(storage *Storage) *Client {
 	return &Client{
 		httpClient: &http.Client{Timeout: 15 * time.Second},
-		torrent:    torrent,
+		storage:    storage,
 		peersCh:    make(chan Peers, 1),
-		pms:        make(PeerManagers),
+		pms:        make(PeerManagers, 0, 512),
+		intervals:  make(map[Hash]time.Duration),
 	}
 }
 
 func (c *Client) Run(ctx context.Context) error {
-	err := c.trackerRequest(ctx, started)
-	if err != nil {
-		log.Printf("failed to handle tracker request %s", err)
-	}
+	c.trackerRequests(ctx, started)
 	var wg sync.WaitGroup
-	wg.Add(2)
-	go c.trackerRegularRequests(ctx, &wg)
+	wg.Add(3)
+	go c.listen(ctx, &wg)
 	go c.managePeers(ctx, &wg)
+	go c.trackerRegularRequests(ctx, &wg)
 	wg.Wait()
-	err = c.trackerStoppedRequest(ctx)
-	if err != nil {
-		return err
-	}
-	c.stop()
+	close(c.peersCh)
+	c.trackerRequests(ctx, stopped)
 	return ctx.Err()
-}
-
-func (c *Client) stop() {
-	c.pmsLock.RLock()
-	defer c.pmsLock.RUnlock()
-	for _, pm := range c.pms {
-		_ = pm.Close()
-	}
 }
 
 type event string
@@ -74,19 +67,22 @@ const (
 
 func (c *Client) trackerRegularRequests(ctx context.Context, wg *sync.WaitGroup) {
 	defer wg.Done()
-	ticker := time.NewTicker(c.interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			err := c.trackerRequest(ctx, regular)
-			if err != nil {
-				log.Printf("failed to handle tracker request %s", err)
+	for torrent := range c.storage.IterateTorrents() {
+		torrent := torrent
+		go func() {
+			c.intervalsLock.RLock()
+			ticker := time.NewTicker(c.intervals[torrent.InfoHash])
+			c.intervalsLock.RUnlock()
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					c.trackerRequest(ctx, torrent, regular, wg)
+				case <-ctx.Done():
+					return
+				}
 			}
-		case <-ctx.Done():
-			close(c.peersCh)
-			return
-		}
+		}()
 	}
 }
 
@@ -101,11 +97,14 @@ func (c *Client) managePeers(ctx context.Context, wg *sync.WaitGroup) {
 				return
 			}
 			c.pmsLock.Lock()
-			for ip, peer := range peers {
-				_, ok = c.pms[ip]
-				if !ok {
-					pm := NewPeerManager(peer, c.torrent.InfoHash)
-					c.pms[ip] = pm
+			for _, peer := range peers {
+				foundPms := c.pms.FindAllBy(peer.InfoHash, peer.IP)
+				// peer.InfoHash == nil means peer has just connected to us
+				// len(foundPms) == 0 means there are no pm with such infoHash and IP
+				// always add peers who connected to us OR new peers sent from tracker
+				if peer.InfoHash == nil || len(foundPms) == 0 {
+					pm := NewPeerManager(c.storage, peer, peer.Conn)
+					c.pms = append(c.pms, pm)
 					wg.Add(1)
 					go pm.Run(ctx, wg)
 				}
@@ -114,11 +113,7 @@ func (c *Client) managePeers(ctx context.Context, wg *sync.WaitGroup) {
 		case <-ticker.C:
 			c.pmsLock.Lock()
 			before := len(c.pms)
-			for ip, pm := range c.pms {
-				if !pm.IsAlive() {
-					delete(c.pms, ip)
-				}
-			}
+			c.pms = c.pms.FindAlive()
 			log.Printf("deleted %d peers, total peers now %d", before-len(c.pms), len(c.pms))
 			c.pmsLock.Unlock()
 		case <-ctx.Done():
@@ -127,55 +122,99 @@ func (c *Client) managePeers(ctx context.Context, wg *sync.WaitGroup) {
 	}
 }
 
-func (c *Client) trackerRequest(ctx context.Context, event event) error {
-	url, err := c.torrent.buildTrackerURL(MyPeerID(), 6881, event)
+func (c *Client) listen(ctx context.Context, wg *sync.WaitGroup) {
+	defer wg.Done()
+	var lc net.ListenConfig
+
+	listener, err := lc.Listen(ctx, "tcp", fmt.Sprintf(":%d", listenPort))
+
 	if err != nil {
-		return err
+		log.Printf("unable to listen port %d", listenPort)
+		return
+	}
+
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				str := err.Error()
+				if strings.Contains(str, "use of closed network connection") {
+					return
+				}
+				continue
+			}
+			if conn.RemoteAddr().Network() != "tcp" {
+				conn.Close()
+				continue
+			}
+			log.Printf("incoming connection from %s", conn.RemoteAddr().String())
+			addr := conn.RemoteAddr().(*net.TCPAddr)
+			peer := Peer{
+				InfoHash: nil,
+				IP:       addr.IP,
+				Port:     uint16(addr.Port),
+				Conn:     conn,
+			}
+			c.peersCh <- Peers{peer}
+		}
+	}()
+	<-ctx.Done()
+	listener.Close()
+}
+
+func (c *Client) trackerRequests(ctx context.Context, event event) {
+	var wg sync.WaitGroup
+	wg.Add(c.storage.Len())
+	for torrent := range c.storage.IterateTorrents() {
+		go c.trackerRequest(ctx, torrent, event, &wg)
+	}
+	wg.Wait()
+}
+
+func (c *Client) trackerRequest(ctx context.Context, torrent *TorrentFile, event event, wg *sync.WaitGroup) {
+	defer wg.Done()
+	url, err := torrent.buildTrackerURL(MyPeerID(), listenPort, event)
+	if err != nil {
+		log.Println(err)
+		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, c.httpClient.Timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		return err
+		log.Println(err)
+		return
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return err
+		log.Println(err)
+		return
 	}
 	defer resp.Body.Close()
+	if event == stopped {
+		return // no need to decode response
+	}
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		log.Println(err)
+		return
 	}
 
 	buf := bytes.NewBuffer(b)
 	decoded, err := bencode.Decode(buf)
 	if err != nil {
-		return err
+		log.Println(err)
+		return
 	}
-	response := &trackerResponse{}
+	response := newTrackerResponse(torrent.InfoHash)
 	err = response.unmarshal(decoded)
+
 	if err != nil {
-		return err
+		log.Println(err)
+		return
 	}
-	c.interval = response.interval
+	c.intervalsLock.Lock()
+	c.intervals[torrent.InfoHash] = response.interval
+	defer c.intervalsLock.Unlock()
 	c.peersCh <- response.peers
-
-	return nil
-}
-
-func (c *Client) trackerStoppedRequest(ctx context.Context) error {
-	url, err := c.torrent.buildTrackerURL(MyPeerID(), 6881, stopped)
-	if err != nil {
-		return err
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, c.httpClient.Timeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return err
-	}
-	_, err = c.httpClient.Do(req)
-	return err
 }

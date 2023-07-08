@@ -1,13 +1,14 @@
 package p2p
 
 import (
-	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -16,60 +17,93 @@ const (
 	pstr         = "BitTorrent protocol"
 )
 
-type PeerManagers map[ipv4]*PeerManager
+type PeerManagers []*PeerManager
 
-type PeerManager struct {
-	conn           net.Conn
-	peer           Peer
-	infoHash       Hash
-	amChoking      bool
-	amInterested   bool
-	peerChoking    bool
-	peerInterested bool
+func (pms PeerManagers) FindAllBy(infoHash *Hash, ip net.IP) PeerManagers {
+	foundPms := make(PeerManagers, 0, 10)
+	for _, pm := range pms {
+		if pm.peer.InfoHash == infoHash && pm.peer.IP.Equal(ip) {
+			foundPms = append(foundPms, pm)
+		}
+	}
+	return foundPms
 }
 
-func NewPeerManager(peer Peer, infoHash Hash) *PeerManager {
-	return &PeerManager{
-		peer:        peer,
-		infoHash:    infoHash,
-		amChoking:   true,
-		peerChoking: true,
+func (pms PeerManagers) FindAlive() PeerManagers {
+	alivePms := make([]*PeerManager, 0, len(pms))
+	for _, pm := range pms {
+		if pm.IsAlive() {
+			alivePms = append(alivePms, pm)
+		}
 	}
+	return alivePms
+}
+
+type PeerManager struct {
+	storage          StorageGetter
+	peer             Peer
+	conn             net.Conn
+	isAlive          atomic.Bool
+	incomeMessagesCh chan *Message
+	bitfield         []byte
+	amChoking        bool
+	amInterested     bool
+	peerChoking      bool
+	peerInterested   bool
+}
+
+func NewPeerManager(storage StorageGetter, peer Peer, conn net.Conn) *PeerManager {
+	pm := &PeerManager{
+		storage:          storage,
+		peer:             peer,
+		conn:             conn,
+		incomeMessagesCh: make(chan *Message, 512),
+		amChoking:        true,
+		peerChoking:      true,
+	}
+	pm.isAlive.Store(true)
+	return pm
 }
 
 func (pm *PeerManager) Run(ctx context.Context, wg *sync.WaitGroup) {
+	if !pm.isAlive.Load() {
+		panic("peer manager is not alive")
+	}
 	defer wg.Done()
 	defer func() {
 		if pm.conn != nil {
 			pm.conn.Close()
-			pm.conn = nil
 		}
+		pm.isAlive.Store(false)
 	}()
-	err := pm.handshake(ctx)
-	if err != nil {
-		log.Printf("%s: unable to handshake: %s", pm.peer.Address(), err)
-		return
+	if pm.conn == nil {
+		err := pm.sendHandshake(ctx)
+		if err != nil {
+			log.Printf("%s: unable to send handshake: %s", pm.peer.Address(), err)
+			return
+		}
+	} else {
+		err := pm.acceptHandshake()
+		if err != nil {
+			log.Printf("%s: unable to accept handshake: %s", pm.peer.Address(), err)
+			return
+		}
 	}
 	log.Printf("%s: successful handshake", pm.peer.Address())
-	<-ctx.Done()
 
+	go pm.readMessages()
+	go pm.handleMessages()
+	<-ctx.Done()
 }
 
 func (pm *PeerManager) IsAlive() bool {
-	return pm.conn != nil
+	return pm.isAlive.Load()
 }
 
-func (pm *PeerManager) Close() error {
-	if pm.conn == nil {
-		return nil
-	}
-	return pm.conn.Close()
-}
-
-func (pm *PeerManager) handshake(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+func (pm *PeerManager) sendHandshake(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	myHs := newHandshake(pm.infoHash, MyPeerID())
+	myHs := newHandshake(pm.peer.InfoHash, MyPeerID())
 	dialer := &net.Dialer{
 		KeepAlive: 30 * time.Second,
 	}
@@ -77,20 +111,22 @@ func (pm *PeerManager) handshake(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("unable to establish conn: %w", err)
 	}
-	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	defer conn.SetDeadline(time.Time{})
+	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	_, err = conn.Write(myHs.encode())
 	if err != nil {
 		conn.Close()
 		return fmt.Errorf("unable to write handshake: %w", err)
 	}
 	buf := make([]byte, handshakeLen)
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	_, err = io.ReadFull(conn, buf)
 	if err != nil {
 		conn.Close()
 		return fmt.Errorf("unable to read handshake: %w", err)
 	}
 
-	peerHs := newHandshake(pm.infoHash, PeerID{})
+	peerHs := newHandshake(pm.peer.InfoHash, PeerID{})
 	err = peerHs.decode(buf)
 	if err != nil {
 		conn.Close()
@@ -100,60 +136,75 @@ func (pm *PeerManager) handshake(ctx context.Context) error {
 	return nil
 }
 
-type handshake struct {
-	infoHash Hash
-	peerID   PeerID
-}
-
-func newHandshake(infoHash Hash, peerId PeerID) *handshake {
-	return &handshake{
-		infoHash: infoHash,
-		peerID:   peerId,
-	}
-}
-
-// encode <pstrlen><pstr><reserved><info_hash><peer_id>
-func (h *handshake) encode() []byte {
+func (pm *PeerManager) acceptHandshake() error {
+	_ = pm.conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	defer pm.conn.SetReadDeadline(time.Time{})
 	buf := make([]byte, handshakeLen)
-	buf[0] = byte(len(pstr))
-	curr := 1
-	curr += copy(buf[curr:], pstr)
-	curr += copy(buf[curr:], make([]byte, 8)) // 8 reserved bytes
-	curr += copy(buf[curr:], h.infoHash[:])
-	curr += copy(buf[curr:], h.peerID[:])
-	return buf
+	_, err := io.ReadFull(pm.conn, buf)
+	if err != nil {
+		return fmt.Errorf("unable to read handshake: %w", err)
+	}
+	peerHs := newHandshake(pm.peer.InfoHash, PeerID{})
+	err = peerHs.decode(buf)
+	if err != nil {
+		return fmt.Errorf("unable to decode handshake: %w", err)
+	}
+	pm.peer.InfoHash = peerHs.infoHash
+	torrent := pm.storage.Get(*pm.peer.InfoHash)
+	if torrent == nil {
+		return fmt.Errorf("torrent with info hash %s not found", pm.peer.InfoHash)
+	}
+	myHs := newHandshake(pm.peer.InfoHash, MyPeerID())
+	_ = pm.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	defer pm.conn.SetWriteDeadline(time.Time{})
+	_, err = pm.conn.Write(myHs.encode())
+	return err
 }
 
-func (h *handshake) decode(raw []byte) error {
-	if h == nil {
-		panic("h must be not nil")
+func (pm *PeerManager) readMessages() {
+	defer close(pm.incomeMessagesCh)
+	_ = pm.conn.SetReadDeadline(time.Time{})
+	for {
+		bufLen := make([]byte, 4)
+		_, err := io.ReadFull(pm.conn, bufLen)
+		if err != nil {
+			return
+		}
+		msgLen := binary.BigEndian.Uint32(bufLen)
+		if msgLen == 0 { //keep-alive message
+			continue
+		}
+		msgBuf := make([]byte, msgLen)
+		_, err = io.ReadFull(pm.conn, msgBuf)
+		if err != nil {
+			return
+		}
+		pm.incomeMessagesCh <- &Message{
+			ID:      messageId(msgBuf[0]),
+			Payload: msgBuf[1:],
+		}
 	}
-	r := bytes.NewReader(raw)
-	// read pstrlen
-	if pstrLen, err := r.ReadByte(); err != nil || pstrLen != byte(len(pstr)) {
-		return fmt.Errorf("invalid handshake: unable to read pstrlen")
-	}
-	// read pstr
-	buf := make([]byte, len(pstr))
-	if _, err := io.ReadFull(r, buf); err != nil || string(buf) != pstr {
-		return fmt.Errorf("invalid handshake: unable to read pstr")
-	}
-	// read reserved 8 bytes
-	buf = make([]byte, 8)
-	if _, err := io.ReadFull(r, buf); err != nil {
-		return fmt.Errorf("invalid handshake: unable to read reserved bytes")
-	}
-	// read info_hash
-	buf = make([]byte, HashSize)
-	if _, err := io.ReadFull(r, buf); err != nil || !bytes.Equal(buf, h.infoHash[:]) {
-		return fmt.Errorf("invalid handshake: unable to read info_hash")
-	}
-	// read peer_id
-	buf = make([]byte, PeerIdSize)
-	if _, err := io.ReadFull(r, buf); err != nil {
-		return fmt.Errorf("invalid handshake: unable to read peer_id")
-	}
-	h.peerID = PeerID(buf)
+}
 
-	return nil
+func (pm *PeerManager) handleMessages() {
+	for message := range pm.incomeMessagesCh {
+		switch message.ID {
+		case msgChoke:
+			pm.amChoking = true
+		case msgUnChoke:
+			pm.amChoking = false
+		case msgInterested:
+			pm.peerInterested = true
+		case msgNotInterested:
+			pm.peerInterested = false
+		case msgHave:
+		case msgBitfield:
+		case msgRequest:
+		case msgPiece:
+		case msgCancel:
+		case msgPort:
+		default:
+			// ignore
+		}
+	}
 }

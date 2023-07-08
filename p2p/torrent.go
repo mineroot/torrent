@@ -54,7 +54,7 @@ func (t *TorrentFile) buildTrackerURL(peerID PeerID, port uint16, event event) (
 		"compact":    []string{"1"},
 		"left":       []string{strconv.Itoa(t.Length)},
 		"event":      []string{string(event)},
-		"numwant":    []string{"100"},
+		"numwant":    []string{"10"},
 	}
 	base.RawQuery = params.Encode()
 	return base.String(), nil
