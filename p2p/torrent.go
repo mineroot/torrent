@@ -5,8 +5,8 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"net/url"
+	"os"
 	"strconv"
 	"torrent/bencode"
 )
@@ -20,17 +20,28 @@ func (h Hash) String() string {
 }
 
 type TorrentFile struct {
-	Announce    string
-	InfoHash    Hash
-	PieceHashes []Hash
-	PieceLength int
-	Length      int
-	Name        string
+	TorrentFileName string
+	DownloadDir     string
+	Announce        string
+	InfoHash        Hash
+	PieceHashes     []Hash
+	PieceLength     int
+	Length          int
+	Name            string
 }
 
-func Open(r io.Reader) (*TorrentFile, error) {
-	torrent := &TorrentFile{}
-	benType, err := bencode.Decode(r)
+func Open(torrentFileName, downloadDir string) (*TorrentFile, error) {
+	file, err := os.Open(torrentFileName)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	torrent := &TorrentFile{
+		TorrentFileName: file.Name(),
+		DownloadDir:     downloadDir,
+	}
+	benType, err := bencode.Decode(file)
 	if err != nil {
 		return nil, err
 	}
@@ -38,6 +49,10 @@ func Open(r io.Reader) (*TorrentFile, error) {
 		return nil, err
 	}
 	return torrent, nil
+}
+
+func (t *TorrentFile) PiecesCount() int {
+	return len(t.PieceHashes)
 }
 
 func (t *TorrentFile) buildTrackerURL(peerID PeerID, port uint16, event event) (string, error) {

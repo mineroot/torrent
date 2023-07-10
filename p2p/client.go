@@ -19,11 +19,8 @@ const listenPort = 6881
 
 type PeerID [PeerIdSize]byte
 
-func MyPeerID() PeerID {
-	return PeerID([]byte("-GO0001-random_bytes"))
-}
-
 type Client struct {
+	id            PeerID
 	httpClient    *http.Client
 	storage       *Storage
 	peersCh       chan Peers
@@ -33,8 +30,9 @@ type Client struct {
 	intervals     map[Hash]time.Duration
 }
 
-func NewClient(storage *Storage) *Client {
+func NewClient(id PeerID, storage *Storage) *Client {
 	return &Client{
+		id:         id,
 		httpClient: &http.Client{Timeout: 15 * time.Second},
 		storage:    storage,
 		peersCh:    make(chan Peers, 1),
@@ -68,7 +66,7 @@ const (
 
 func (c *Client) trackerRegularRequests(ctx context.Context, wg *sync.WaitGroup) {
 	defer wg.Done()
-	for torrent := range c.storage.IterateTorrents() {
+	for torrent := range c.storage.Iterator() {
 		torrent := torrent
 		go func() {
 			c.intervalsLock.RLock()
@@ -105,7 +103,7 @@ func (c *Client) managePeers(ctx context.Context, wg *sync.WaitGroup) {
 				// len(foundPms) == 0 means there are no pm with such infoHash and IP
 				// always add peers who connected to us OR new peers sent from tracker
 				if peer.InfoHash == nil || len(foundPms) == 0 {
-					pm := NewPeerManager(c.storage, peer, peer.Conn)
+					pm := NewPeerManager(c.id, c.storage, peer, peer.Conn)
 					c.pms = append(c.pms, pm)
 					wg.Add(1)
 					go pm.Run(ctx, wg, nil)
@@ -178,7 +176,7 @@ func (c *Client) listen(ctx context.Context, wg *sync.WaitGroup, started chan<- 
 func (c *Client) trackerRequests(ctx context.Context, event event) {
 	var wg sync.WaitGroup
 	wg.Add(c.storage.Len())
-	for torrent := range c.storage.IterateTorrents() {
+	for torrent := range c.storage.Iterator() {
 		go c.trackerRequest(ctx, torrent, event, &wg)
 	}
 	wg.Wait()
@@ -186,7 +184,7 @@ func (c *Client) trackerRequests(ctx context.Context, event event) {
 
 func (c *Client) trackerRequest(ctx context.Context, torrent *TorrentFile, event event, wg *sync.WaitGroup) {
 	defer wg.Done()
-	url, err := torrent.buildTrackerURL(MyPeerID(), listenPort, event)
+	url, err := torrent.buildTrackerURL(c.id, listenPort, event)
 	l := log.Ctx(ctx).With().Str("url", url).Logger()
 	if err != nil {
 		l.Error().

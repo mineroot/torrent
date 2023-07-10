@@ -3,6 +3,7 @@ package p2p
 import (
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -41,34 +42,40 @@ func (pms PeerManagers) FindAlive() PeerManagers {
 }
 
 type PeerManager struct {
-	storage          StorageGetter
+	clientId         PeerID
+	storage          StorageReader
 	peer             Peer
 	conn             net.Conn
 	isAlive          atomic.Bool
 	incomeMessagesCh chan *Message
+	outcomeMessageCh chan *Message
 	bitfield         []byte
-	amChoking        bool
-	amInterested     bool
-	peerChoking      bool
-	peerInterested   bool
+	amChoking        atomic.Bool
+	amInterested     atomic.Bool
+	peerChoking      atomic.Bool
+	peerInterested   atomic.Bool
+	log              zerolog.Logger
 }
 
-func NewPeerManager(storage StorageGetter, peer Peer, conn net.Conn) *PeerManager {
+func NewPeerManager(clientId PeerID, storage StorageReader, peer Peer, conn net.Conn) *PeerManager {
 	pm := &PeerManager{
+		clientId:         clientId,
 		storage:          storage,
 		peer:             peer,
 		conn:             conn,
 		incomeMessagesCh: make(chan *Message, 512),
-		amChoking:        true,
-		peerChoking:      true,
+		outcomeMessageCh: make(chan *Message, 512),
 	}
 	pm.isAlive.Store(true)
+	pm.amChoking.Store(true)
+	pm.peerChoking.Store(true)
 	return pm
 }
 
 func (pm *PeerManager) Run(ctx context.Context, wg *sync.WaitGroup, handshakeOkCh chan<- bool) {
 	defer wg.Done()
 	defer func() {
+		close(pm.outcomeMessageCh)
 		if pm.conn != nil {
 			pm.conn.Close()
 		}
@@ -77,14 +84,7 @@ func (pm *PeerManager) Run(ctx context.Context, wg *sync.WaitGroup, handshakeOkC
 	if !pm.isAlive.Load() {
 		panic("peer manager is not alive")
 	}
-	l := log.Ctx(ctx).With().Str("remote_peer", pm.peer.Address()).Logger().
-		Hook(zerolog.HookFunc(func(e *zerolog.Event, _ zerolog.Level, _ string) {
-			infoHashStr := ""
-			if pm.peer.InfoHash != nil {
-				infoHashStr = pm.peer.InfoHash.String()
-			}
-			e.Str("info_hash", infoHashStr)
-		}))
+	pm.setLoggerFromCtx(ctx)
 
 	var err error
 	if pm.conn == nil {
@@ -105,13 +105,33 @@ func (pm *PeerManager) Run(ctx context.Context, wg *sync.WaitGroup, handshakeOkC
 		close(handshakeOkCh)
 	}
 	if err != nil {
-		l.Error().Err(err).Send()
+		pm.log.Error().Err(err).Send()
 		return
 	}
-	l.Info().Msg("successful handshake")
+	pm.log.Info().Msg("successful handshake")
+
+	bitfield := pm.storage.GetBitfield(*pm.peer.InfoHash)
+	pm.outcomeMessageCh <- NewBitfield(bitfield)
+	go func() { // todo: for test
+		if bitfield.IsCompleted() {
+			pm.log.Info().Msg("seeding")
+			pm.outcomeMessageCh <- NewUnChoke()
+		} else {
+			pm.log.Info().Msg("downloading")
+			for {
+				if !pm.amChoking.Load() {
+					pm.outcomeMessageCh <- NewRequest()
+					break
+				}
+				time.Sleep(time.Millisecond * 100)
+			}
+		}
+	}()
 
 	go pm.readMessages()
+	go pm.writeMessages()
 	go pm.handleMessages()
+
 	<-ctx.Done()
 }
 
@@ -122,7 +142,7 @@ func (pm *PeerManager) IsAlive() bool {
 func (pm *PeerManager) sendHandshake(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	myHs := newHandshake(pm.peer.InfoHash, MyPeerID())
+	myHs := newHandshake(pm.peer.InfoHash, pm.clientId)
 	dialer := &net.Dialer{
 		KeepAlive: 30 * time.Second,
 	}
@@ -173,7 +193,7 @@ func (pm *PeerManager) acceptHandshake() error {
 	if torrent == nil {
 		return fmt.Errorf("torrent with info hash %s not found", pm.peer.InfoHash)
 	}
-	myHs := newHandshake(pm.peer.InfoHash, MyPeerID())
+	myHs := newHandshake(pm.peer.InfoHash, pm.clientId)
 	_ = pm.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	defer pm.conn.SetWriteDeadline(time.Time{})
 	_, err = pm.conn.Write(myHs.encode())
@@ -187,6 +207,7 @@ func (pm *PeerManager) readMessages() {
 		bufLen := make([]byte, 4)
 		_, err := io.ReadFull(pm.conn, bufLen)
 		if err != nil {
+			pm.log.Error().Err(err).Send()
 			return
 		}
 		msgLen := binary.BigEndian.Uint32(bufLen)
@@ -196,6 +217,7 @@ func (pm *PeerManager) readMessages() {
 		msgBuf := make([]byte, msgLen)
 		_, err = io.ReadFull(pm.conn, msgBuf)
 		if err != nil {
+			pm.log.Error().Err(err).Send()
 			return
 		}
 		pm.incomeMessagesCh <- &Message{
@@ -205,17 +227,28 @@ func (pm *PeerManager) readMessages() {
 	}
 }
 
+func (pm *PeerManager) writeMessages() {
+	for message := range pm.outcomeMessageCh {
+		_ = pm.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		_, err := pm.conn.Write(message.Encode())
+		if err != nil {
+			pm.log.Error().Err(err).Send()
+		}
+	}
+}
+
 func (pm *PeerManager) handleMessages() {
 	for message := range pm.incomeMessagesCh {
+		pm.log.Info().Int("messageId", int(message.ID)).Str("payload", hex.EncodeToString(message.Payload)).Msg("new message")
 		switch message.ID {
 		case msgChoke:
-			pm.amChoking = true
+			pm.amChoking.Store(true)
 		case msgUnChoke:
-			pm.amChoking = false
+			pm.amChoking.Store(false)
 		case msgInterested:
-			pm.peerInterested = true
+			pm.peerInterested.Store(true)
 		case msgNotInterested:
-			pm.peerInterested = false
+			pm.peerInterested.Store(false)
 		case msgHave:
 		case msgBitfield:
 		case msgRequest:
@@ -226,4 +259,15 @@ func (pm *PeerManager) handleMessages() {
 			// ignore
 		}
 	}
+}
+
+func (pm *PeerManager) setLoggerFromCtx(ctx context.Context) {
+	pm.log = log.Ctx(ctx).With().Str("peer_id", string(pm.clientId[:])).Str("remote_peer", pm.peer.Address()).Logger().
+		Hook(zerolog.HookFunc(func(e *zerolog.Event, _ zerolog.Level, _ string) {
+			infoHashStr := ""
+			if pm.peer.InfoHash != nil {
+				infoHashStr = pm.peer.InfoHash.String()
+			}
+			e.Str("info_hash", infoHashStr)
+		}))
 }

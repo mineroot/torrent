@@ -3,15 +3,11 @@ package p2p
 import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"os"
 	"testing"
 )
 
 func TestOpen(t *testing.T) {
-	r, err := os.Open("../testdata/debian-12.0.0-amd64-netinst.iso.torrent")
-	require.NoError(t, err)
-	defer r.Close()
-	torrent, err := Open(r)
+	torrent, err := Open("../testdata/debian-12.0.0-amd64-netinst.iso.torrent", "")
 	require.NoError(t, err)
 	assert.Equal(t, "b851474b74f65cd19f981c723590e3e520242b97", torrent.InfoHash.String())
 	assert.Equal(t, "http://bttracker.debian.org:6969/announce", torrent.Announce)

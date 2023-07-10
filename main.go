@@ -14,18 +14,16 @@ import (
 
 func main() {
 	l := log.Output(zerolog.ConsoleWriter{Out: os.Stderr}).With().Caller().Logger()
-	file, err := os.Open("testdata/debian-12.0.0-amd64-netinst.iso.torrent")
-	if err != nil {
-		l.Fatal().Err(err).Send()
-	}
-	defer file.Close()
-	torrent, err := p2p.Open(file)
+	torrent, err := p2p.Open("testdata/debian-12.0.0-amd64-netinst.iso.torrent", "")
 	if err != nil {
 		l.Fatal().Err(err).Send()
 	}
 	storage := p2p.NewStorage()
-	storage.Set(torrent.InfoHash, torrent)
-	client := p2p.NewClient(storage)
+	err = storage.Set(torrent.InfoHash, torrent)
+	if err != nil {
+		l.Fatal().Err(err).Send()
+	}
+	client := p2p.NewClient(p2p.PeerID([]byte("-GO0001-random_bytes")), storage)
 
 	exit := make(chan os.Signal, 1)
 	signal.Notify(exit, syscall.SIGINT, syscall.SIGTERM)
