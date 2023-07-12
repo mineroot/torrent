@@ -2,7 +2,6 @@ package p2p
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -13,13 +12,16 @@ type StorageReader interface {
 	Iterator() <-chan *TorrentFile
 	Get(infoHash Hash) *TorrentFile
 	GetBitfield(infoHash Hash) *bitfield.Bitfield
+	GetFile(infoHash Hash) *os.File
 }
 
 type Storage struct {
 	calculator BitfieldCalculator
-	lock       sync.RWMutex
-	torrents   map[Hash]*TorrentFile
-	bitfields  map[Hash]*bitfield.Bitfield
+
+	lock      sync.RWMutex
+	torrents  map[Hash]*TorrentFile
+	bitfields map[Hash]*bitfield.Bitfield
+	files     map[Hash]*os.File
 }
 
 func NewStorage() *Storage {
@@ -27,6 +29,7 @@ func NewStorage() *Storage {
 		calculator: &bitfieldConcurrentCalculator{},
 		torrents:   make(map[Hash]*TorrentFile),
 		bitfields:  make(map[Hash]*bitfield.Bitfield),
+		files:      make(map[Hash]*os.File),
 	}
 }
 
@@ -57,6 +60,12 @@ func (s *Storage) GetBitfield(infoHash Hash) *bitfield.Bitfield {
 	return s.bitfields[infoHash]
 }
 
+func (s *Storage) GetFile(infoHash Hash) *os.File {
+	s.lock.RLock()
+	defer s.lock.RUnlock()
+	return s.files[infoHash]
+}
+
 func (s *Storage) Len() int {
 	s.lock.RLock()
 	defer s.lock.RUnlock()
@@ -72,26 +81,45 @@ func (s *Storage) Set(infoHash Hash, torrent *TorrentFile) error {
 	}
 	s.lock.Lock()
 	defer s.lock.Unlock()
-	s.torrents[infoHash] = torrent
 
+	// open or crate file for read and write
 	path := filepath.Join(torrent.DownloadDir, torrent.Name)
-	file, err := os.Open(path)
-	var r io.ReaderAt
+	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0664)
 	if err != nil {
-		if !os.IsNotExist(err) {
-			return fmt.Errorf("unable not open file %s: %w", path, err)
-		}
-	} else {
-		r = file
-	}
-	if file != nil {
-		defer file.Close()
+		return fmt.Errorf("unable not open file %s: %w", path, err)
 	}
 
-	bf, err := s.calculator.Calculate(r, torrent.PieceLength, torrent.PieceHashes)
+	// calculate bitfield
+	bf, err := s.calculator.Calculate(file, torrent.PieceLength, torrent.PieceHashes)
 	if err != nil {
 		return fmt.Errorf("unable to calculate bitfield: %w", err)
 	}
+
+	// fill file with zeros if just created
+	fInfo, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("unable to get file stat")
+	}
+	if fInfo.Size() == 0 {
+		_, err = file.Write(make([]byte, torrent.Length))
+		if err != nil {
+			return fmt.Errorf("unable to fill file with zeros")
+		}
+	}
+	// add to storage all torrent's bitfield, file handler and torrent itself
+	s.torrents[infoHash] = torrent
 	s.bitfields[infoHash] = bf
+	s.files[infoHash] = file
+
 	return nil
+}
+
+func (s *Storage) Close() error {
+	s.lock.RLock()
+	defer s.lock.RUnlock()
+	var err error
+	for _, file := range s.files {
+		err = file.Close()
+	}
+	return err
 }

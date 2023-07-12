@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path"
 	"strconv"
 	"torrent/bencode"
 )
@@ -17,6 +18,12 @@ type Hash [HashSize]byte
 
 func (h Hash) String() string {
 	return hex.EncodeToString(h[:])
+}
+
+// IsZero despite zero hash is completely valid SHA1, we assume it as nil value to not deal with nil checks,
+// we are not so lucky to find real zero hash
+func (h Hash) IsZero() bool {
+	return h == Hash{}
 }
 
 type TorrentFile struct {
@@ -69,7 +76,7 @@ func (t *TorrentFile) buildTrackerURL(peerID PeerID, port uint16, event event) (
 		"compact":    []string{"1"},
 		"left":       []string{strconv.Itoa(t.Length)},
 		"event":      []string{string(event)},
-		"numwant":    []string{"10"},
+		"numwant":    []string{"100"},
 	}
 	base.RawQuery = params.Encode()
 	return base.String(), nil
@@ -139,4 +146,23 @@ func (t *TorrentFile) unmarshal(benType bencode.BenType) error {
 	t.PieceHashes = pieceHashes
 	t.InfoHash = infoHash
 	return nil
+}
+
+func (t *TorrentFile) openFile() (*os.File, error) {
+	filePath := path.Join(t.DownloadDir, t.Name)
+	file, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE, 0664)
+	if err != nil {
+		return nil, fmt.Errorf("unable to open file")
+	}
+	fInfo, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("unable to get file stat")
+	}
+	if fInfo.Size() == 0 {
+		_, err = file.Write(make([]byte, t.Length))
+		if err != nil {
+			return nil, fmt.Errorf("unable to fill file with zeros")
+		}
+	}
+	return file, nil
 }

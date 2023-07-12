@@ -8,7 +8,7 @@ import (
 type Peers []Peer
 
 type Peer struct {
-	InfoHash *Hash
+	InfoHash Hash
 	IP       net.IP
 	Port     uint16
 	Conn     net.Conn

@@ -43,6 +43,12 @@ func NewUnChoke() *Message {
 	}
 }
 
+func NewInterested() *Message {
+	return &Message{
+		ID: msgInterested,
+	}
+}
+
 func NewBitfield(bf *bitfield.Bitfield) *Message {
 	return &Message{
 		ID:      msgBitfield,
@@ -50,13 +56,24 @@ func NewBitfield(bf *bitfield.Bitfield) *Message {
 	}
 }
 
-func NewRequest() *Message {
+func NewRequest(pieceIndex, begin, length uint32) *Message {
 	buf := make([]byte, 12)
-	binary.BigEndian.PutUint32(buf[:4], 0)
-	binary.BigEndian.PutUint32(buf[4:8], 0)
-	binary.BigEndian.PutUint32(buf[8:12], 1<<14) // 16kB
+	binary.BigEndian.PutUint32(buf[:4], pieceIndex)
+	binary.BigEndian.PutUint32(buf[4:8], begin)
+	binary.BigEndian.PutUint32(buf[8:12], length)
 	return &Message{
 		ID:      msgRequest,
+		Payload: buf,
+	}
+}
+
+func NewPiece(pieceIndex, begin uint32, data []byte) *Message {
+	buf := make([]byte, 8)
+	binary.BigEndian.PutUint32(buf[:4], pieceIndex)
+	binary.BigEndian.PutUint32(buf[4:8], begin)
+	buf = append(buf, data...)
+	return &Message{
+		ID:      msgPiece,
 		Payload: buf,
 	}
 }

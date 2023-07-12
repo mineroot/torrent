@@ -67,7 +67,7 @@ func (r *trackerResponse) unmarshal(benType bencode.BenType) error {
 		offset := i * peerSize
 		peer := peersBuf[offset : offset+peerSize]
 		r.peers[i] = Peer{
-			InfoHash: &r.infoHash,
+			InfoHash: r.infoHash,
 			IP:       peer[:net.IPv4len],
 			Port:     binary.BigEndian.Uint16(peer[net.IPv4len:]),
 		}
