@@ -1,4 +1,4 @@
-package p2p
+package torrent
 
 import (
 	"github.com/stretchr/testify/assert"
@@ -7,7 +7,7 @@ import (
 )
 
 func TestOpen(t *testing.T) {
-	torrent, err := Open("../testdata/debian-12.0.0-amd64-netinst.iso.torrent", "")
+	torrent, err := Open("../../testdata/debian-12.0.0-amd64-netinst.iso.torrent", "")
 	require.NoError(t, err)
 	assert.Equal(t, "b851474b74f65cd19f981c723590e3e520242b97", torrent.InfoHash.String())
 	assert.Equal(t, "http://bttracker.debian.org:6969/announce", torrent.Announce)

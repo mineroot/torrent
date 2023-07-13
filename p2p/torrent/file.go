@@ -1,9 +1,8 @@
-package p2p
+package torrent
 
 import (
 	"bytes"
 	"crypto/sha1"
-	"encoding/hex"
 	"fmt"
 	"net/url"
 	"os"
@@ -11,15 +10,16 @@ import (
 	"torrent/bencode"
 )
 
-const HashSize = sha1.Size
+type Event string
 
-type Hash [HashSize]byte
+const (
+	Started   Event = "started"
+	Regular         = ""
+	Completed       = "completed"
+	Stopped         = "stopped"
+)
 
-func (h Hash) String() string {
-	return hex.EncodeToString(h[:])
-}
-
-type TorrentFile struct {
+type File struct {
 	TorrentFileName string
 	DownloadDir     string
 	Announce        string
@@ -30,14 +30,14 @@ type TorrentFile struct {
 	Name            string
 }
 
-func Open(torrentFileName, downloadDir string) (*TorrentFile, error) {
+func Open(torrentFileName, downloadDir string) (*File, error) {
 	file, err := os.Open(torrentFileName)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
 
-	torrent := &TorrentFile{
+	torrent := &File{
 		TorrentFileName: file.Name(),
 		DownloadDir:     downloadDir,
 	}
@@ -51,31 +51,32 @@ func Open(torrentFileName, downloadDir string) (*TorrentFile, error) {
 	return torrent, nil
 }
 
-func (t *TorrentFile) PiecesCount() int {
+func (t *File) PiecesCount() int {
 	return len(t.PieceHashes)
 }
 
-func (t *TorrentFile) buildTrackerURL(peerID PeerID, port uint16, event event) (string, error) {
+func (t *File) BuildTrackerURL(id peerID, port uint16, event Event) (string, error) {
 	base, err := url.Parse(t.Announce)
 	if err != nil {
 		return "", err
 	}
+	peerId := id.PeerId()
 	params := url.Values{
 		"info_hash":  []string{string(t.InfoHash[:])},
-		"peer_id":    []string{string(peerID[:])},
+		"peer_id":    []string{string(peerId[:])},
 		"port":       []string{strconv.Itoa(int(port))},
 		"uploaded":   []string{"0"},
 		"downloaded": []string{"0"},
 		"compact":    []string{"1"},
 		"left":       []string{strconv.Itoa(t.Length)},
 		"event":      []string{string(event)},
-		"numwant":    []string{"10"},
+		"numwant":    []string{"100"},
 	}
 	base.RawQuery = params.Encode()
 	return base.String(), nil
 }
 
-func (t *TorrentFile) unmarshal(benType bencode.BenType) error {
+func (t *File) unmarshal(benType bencode.BenType) error {
 	if t == nil {
 		panic("torrent must be not nil")
 	}
@@ -139,4 +140,10 @@ func (t *TorrentFile) unmarshal(benType bencode.BenType) error {
 	t.PieceHashes = pieceHashes
 	t.InfoHash = infoHash
 	return nil
+}
+
+const peerIdSize = 20
+
+type peerID interface {
+	PeerId() [peerIdSize]byte
 }

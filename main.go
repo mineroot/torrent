@@ -5,25 +5,31 @@ import (
 	"errors"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 	"torrent/p2p"
+	"torrent/p2p/storage"
+	"torrent/p2p/torrent"
 )
 
+const listenPort uint16 = 6881
+
 func main() {
-	l := log.Output(zerolog.ConsoleWriter{Out: os.Stderr}).With().Caller().Logger()
-	torrent, err := p2p.Open("testdata/debian-12.0.0-amd64-netinst.iso.torrent", "")
+	l := log.Output(zerolog.ConsoleWriter{Out: os.Stderr}).With().Caller().Logger().Level(zerolog.InfoLevel)
+	t, err := torrent.Open("testdata/debian-12.0.0-amd64-netinst.iso.torrent", "")
 	if err != nil {
 		l.Fatal().Err(err).Send()
 	}
-	storage := p2p.NewStorage()
-	err = storage.Set(torrent.InfoHash, torrent)
+	s := storage.NewStorage()
+	err = s.Set(t.InfoHash, t)
 	if err != nil {
 		l.Fatal().Err(err).Send()
 	}
-	client := p2p.NewClient(p2p.PeerID([]byte("-GO0001-random_bytes")), storage)
+	announcer := &http.Client{}
+	client := p2p.NewClient(p2p.PeerID([]byte("-GO0001-random_bytes")), listenPort, s, announcer)
 
 	exit := make(chan os.Signal, 1)
 	signal.Notify(exit, syscall.SIGINT, syscall.SIGTERM)

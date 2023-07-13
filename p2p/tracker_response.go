@@ -6,10 +6,11 @@ import (
 	"net"
 	"time"
 	"torrent/bencode"
+	"torrent/p2p/torrent"
 )
 
 type trackerResponse struct {
-	infoHash    Hash
+	infoHash    torrent.Hash
 	failure     string
 	warning     string
 	interval    time.Duration
@@ -18,7 +19,7 @@ type trackerResponse struct {
 	peers       Peers
 }
 
-func newTrackerResponse(infoHash Hash) *trackerResponse {
+func newTrackerResponse(infoHash torrent.Hash) *trackerResponse {
 	return &trackerResponse{
 		infoHash: infoHash,
 	}
@@ -67,7 +68,7 @@ func (r *trackerResponse) unmarshal(benType bencode.BenType) error {
 		offset := i * peerSize
 		peer := peersBuf[offset : offset+peerSize]
 		r.peers[i] = Peer{
-			InfoHash: &r.infoHash,
+			InfoHash: r.infoHash,
 			IP:       peer[:net.IPv4len],
 			Port:     binary.BigEndian.Uint16(peer[net.IPv4len:]),
 		}
