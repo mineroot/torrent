@@ -4,14 +4,15 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"torrent/p2p/torrent"
 )
 
 type handshake struct {
-	infoHash Hash
+	infoHash torrent.Hash
 	peerID   PeerID
 }
 
-func newHandshake(infoHash Hash, peerId PeerID) *handshake {
+func newHandshake(infoHash torrent.Hash, peerId PeerID) *handshake {
 	return &handshake{
 		infoHash: infoHash,
 		peerID:   peerId,
@@ -50,12 +51,12 @@ func (h *handshake) decode(raw []byte) error {
 		return fmt.Errorf("invalid handshake: unable to read reserved bytes")
 	}
 	// read info_hash
-	buf = make([]byte, HashSize)
+	buf = make([]byte, torrent.HashSize)
 	if _, err := io.ReadFull(r, buf); err != nil || (!h.infoHash.IsZero() && !bytes.Equal(buf, h.infoHash[:])) {
 		return fmt.Errorf("invalid handshake: unable to read info_hash")
 	}
 	if h.infoHash.IsZero() {
-		h.infoHash = (Hash)(buf)
+		h.infoHash = (torrent.Hash)(buf)
 	}
 	// read peer_id
 	buf = make([]byte, PeerIdSize)

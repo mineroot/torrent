@@ -10,10 +10,15 @@ import (
 	"github.com/stretchr/testify/require"
 	"net/http"
 	"os"
+	"os/signal"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 	"torrent/bencode"
 	"torrent/mocks/torrent/p2p"
+	"torrent/p2p/storage"
+	"torrent/p2p/torrent"
 )
 
 func TestClient_Run(t *testing.T) {
@@ -21,18 +26,25 @@ func TestClient_Run(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ctx = l.WithContext(ctx)
+	exit := make(chan os.Signal, 1)
+	signal.Notify(exit, os.Interrupt, syscall.SIGTERM)
 
+	var wg sync.WaitGroup
+	wg.Add(2)
 	go func() {
+		defer wg.Done()
 		err := createRemoteClient(t).Run(ctx)
 		assert.NoError(t, err)
 	}()
 	time.Sleep(time.Millisecond * 1000) // wait until remote listener starts up
 	go func() {
+		defer wg.Done()
 		err := createLocalClient(t).Run(ctx)
 		assert.NoError(t, err)
 	}()
-
-	select {}
+	<-exit
+	cancel()
+	wg.Wait()
 }
 
 func createLocalClient(t *testing.T) *Client {
@@ -51,12 +63,12 @@ func createLocalClient(t *testing.T) *Client {
 	announcer := p2p.NewMockAnnouncer(t)
 	readCloser := &body{Buffer: buf}
 	announcer.EXPECT().Do(mock.Anything).Return(&http.Response{Body: readCloser}, nil)
-	torrent, err := Open("../testdata/shiza.png.torrent", "../testdata/downloads/local")
+	torrentFile, err := torrent.Open("../testdata/shiza.png.torrent", "../testdata/downloads/local")
 	require.NoError(t, err)
-	storage := NewStorage()
-	err = storage.Set(torrent.InfoHash, torrent)
+	s := storage.NewStorage()
+	err = s.Set(torrentFile.InfoHash, torrentFile)
 	require.NoError(t, err)
-	return NewClient(PeerID([]byte("-GO0001-local_peer00")), 6882, storage, announcer)
+	return NewClient(PeerID([]byte("-GO0001-local_peer00")), 6882, s, announcer)
 }
 
 func createRemoteClient(t *testing.T) *Client {
@@ -74,12 +86,12 @@ func createRemoteClient(t *testing.T) *Client {
 	announcer := p2p.NewMockAnnouncer(t)
 	readCloser := &body{Buffer: buf}
 	announcer.EXPECT().Do(mock.Anything).Return(&http.Response{Body: readCloser}, nil)
-	torrent, err := Open("../testdata/shiza.png.torrent", "../testdata/downloads/remote")
+	torrentFile, err := torrent.Open("../testdata/shiza.png.torrent", "../testdata/downloads/remote")
 	require.NoError(t, err)
-	storage := NewStorage()
-	err = storage.Set(torrent.InfoHash, torrent)
+	s := storage.NewStorage()
+	err = s.Set(torrentFile.InfoHash, torrentFile)
 	require.NoError(t, err)
-	return NewClient(PeerID([]byte("-GO0001-remote_peer0")), 6881, storage, announcer)
+	return NewClient(PeerID([]byte("-GO0001-remote_peer0")), 6881, s, announcer)
 }
 
 type body struct {

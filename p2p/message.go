@@ -2,7 +2,7 @@ package p2p
 
 import (
 	"encoding/binary"
-	"torrent/bitfield"
+	"torrent/p2p/bitfield"
 )
 
 type messageId int

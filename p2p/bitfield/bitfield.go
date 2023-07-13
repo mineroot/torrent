@@ -15,10 +15,6 @@ type Bitfield struct {
 	bitfield    []byte
 }
 
-func (bf *Bitfield) BitfieldSize() int {
-	return len(bf.bitfield)
-}
-
 func New(piecesCount int) *Bitfield {
 	bitfieldSize := piecesCount / bits
 	if piecesCount%bits != 0 {
@@ -28,6 +24,14 @@ func New(piecesCount int) *Bitfield {
 		piecesCount: piecesCount,
 		bitfield:    make([]byte, bitfieldSize),
 	}
+}
+
+func (bf *Bitfield) BitfieldSize() int {
+	return len(bf.bitfield)
+}
+
+func (bf *Bitfield) PiecesCount() int {
+	return bf.piecesCount
 }
 
 func FromPayload(payload []byte, piecesCount int) (*Bitfield, error) {

@@ -1,66 +1,67 @@
-package p2p
+package storage
 
 import (
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
-	"torrent/bitfield"
+	"torrent/p2p/bitfield"
+	"torrent/p2p/torrent"
 )
 
-type StorageReader interface {
-	Iterator() <-chan *TorrentFile
-	Get(infoHash Hash) *TorrentFile
-	GetBitfield(infoHash Hash) *bitfield.Bitfield
-	GetFile(infoHash Hash) *os.File
+type Reader interface {
+	Iterator() <-chan *torrent.File
+	Get(infoHash torrent.Hash) *torrent.File
+	GetBitfield(infoHash torrent.Hash) *bitfield.Bitfield
+	GetFile(infoHash torrent.Hash) *os.File
 }
 
 type Storage struct {
 	calculator BitfieldCalculator
 
 	lock      sync.RWMutex
-	torrents  map[Hash]*TorrentFile
-	bitfields map[Hash]*bitfield.Bitfield
-	files     map[Hash]*os.File
+	torrents  map[torrent.Hash]*torrent.File
+	bitfields map[torrent.Hash]*bitfield.Bitfield
+	files     map[torrent.Hash]*os.File
 }
 
 func NewStorage() *Storage {
 	return &Storage{
 		calculator: &bitfieldConcurrentCalculator{},
-		torrents:   make(map[Hash]*TorrentFile),
-		bitfields:  make(map[Hash]*bitfield.Bitfield),
-		files:      make(map[Hash]*os.File),
+		torrents:   make(map[torrent.Hash]*torrent.File),
+		bitfields:  make(map[torrent.Hash]*bitfield.Bitfield),
+		files:      make(map[torrent.Hash]*os.File),
 	}
 }
 
-func (s *Storage) Iterator() <-chan *TorrentFile {
+func (s *Storage) Iterator() <-chan *torrent.File {
 	s.lock.RLock()
-	ch := make(chan *TorrentFile, len(s.torrents))
+	ch := make(chan *torrent.File, len(s.torrents))
 	go func() {
 		defer func() {
 			s.lock.RUnlock()
 			close(ch)
 		}()
-		for _, torrent := range s.torrents {
-			ch <- torrent
+		for _, t := range s.torrents {
+			ch <- t
 		}
 	}()
 	return ch
 }
 
-func (s *Storage) Get(infoHash Hash) *TorrentFile {
+func (s *Storage) Get(infoHash torrent.Hash) *torrent.File {
 	s.lock.RLock()
 	defer s.lock.RUnlock()
 	return s.torrents[infoHash]
 }
 
-func (s *Storage) GetBitfield(infoHash Hash) *bitfield.Bitfield {
+func (s *Storage) GetBitfield(infoHash torrent.Hash) *bitfield.Bitfield {
 	s.lock.RLock()
 	defer s.lock.RUnlock()
 	return s.bitfields[infoHash]
 }
 
-func (s *Storage) GetFile(infoHash Hash) *os.File {
+func (s *Storage) GetFile(infoHash torrent.Hash) *os.File {
 	s.lock.RLock()
 	defer s.lock.RUnlock()
 	return s.files[infoHash]
@@ -72,7 +73,7 @@ func (s *Storage) Len() int {
 	return len(s.torrents)
 }
 
-func (s *Storage) Set(infoHash Hash, torrent *TorrentFile) error {
+func (s *Storage) Set(infoHash torrent.Hash, torrent *torrent.File) error {
 	if torrent == nil {
 		panic("torrent must not be nil")
 	}

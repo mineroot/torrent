@@ -12,7 +12,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"torrent/bitfield"
+	"torrent/p2p/bitfield"
+	"torrent/p2p/download"
+	"torrent/p2p/storage"
+	"torrent/p2p/torrent"
 )
 
 const (
@@ -22,7 +25,7 @@ const (
 
 type PeerManagers []*PeerManager
 
-func (pms PeerManagers) FindByInfoHashAndIp(infoHash Hash, ip net.IP) PeerManagers {
+func (pms PeerManagers) FindByInfoHashAndIp(infoHash torrent.Hash, ip net.IP) PeerManagers {
 	foundPms := make(PeerManagers, 0, 10)
 	for _, pm := range pms {
 		if pm.peer.InfoHash == infoHash && pm.peer.IP.Equal(ip) {
@@ -32,7 +35,7 @@ func (pms PeerManagers) FindByInfoHashAndIp(infoHash Hash, ip net.IP) PeerManage
 	return foundPms
 }
 
-func (pms PeerManagers) FindByInfoHash(infoHash Hash) PeerManagers {
+func (pms PeerManagers) FindByInfoHash(infoHash torrent.Hash) PeerManagers {
 	foundPms := make(PeerManagers, 0, 100)
 	for _, pm := range pms {
 		if pm.peer.InfoHash == infoHash {
@@ -54,7 +57,7 @@ func (pms PeerManagers) FindAlive() PeerManagers {
 
 type PeerManager struct {
 	clientId         PeerID
-	storage          StorageReader
+	storage          storage.Reader
 	peer             Peer
 	isAlive          atomic.Bool
 	incomeMessagesCh chan *Message
@@ -66,14 +69,14 @@ type PeerManager struct {
 	peerInterested   atomic.Bool
 	log              zerolog.Logger
 	peerBitfield     *bitfield.Bitfield
-	torrent          *TorrentFile
+	torrent          *torrent.File
 	exit             chan struct{}
-	dms              map[Hash]*downloadManager
-	dm               *downloadManager
+	dm               *download.Manager
 	file             *os.File
+	dms              *download.Managers
 }
 
-func NewPeerManager(clientId PeerID, storage StorageReader, peer Peer, dms map[Hash]*downloadManager) *PeerManager {
+func NewPeerManager(clientId PeerID, storage storage.Reader, peer Peer, dms *download.Managers) *PeerManager {
 	pm := &PeerManager{
 		clientId:         clientId,
 		storage:          storage,
@@ -86,6 +89,10 @@ func NewPeerManager(clientId PeerID, storage StorageReader, peer Peer, dms map[H
 	pm.amChoking.Store(true)
 	pm.peerChoking.Store(true)
 	return pm
+}
+
+func (pm *PeerManager) GetHash() torrent.Hash {
+	return pm.peer.InfoHash
 }
 
 func (pm *PeerManager) Run(ctx context.Context, wg *sync.WaitGroup) {
@@ -124,7 +131,7 @@ func (pm *PeerManager) Run(ctx context.Context, wg *sync.WaitGroup) {
 
 	pm.torrent = pm.storage.Get(pm.peer.InfoHash)
 	pm.file = pm.storage.GetFile(pm.peer.InfoHash)
-	pm.dm = pm.dms[pm.peer.InfoHash]
+	pm.dm = pm.dms.Load(pm)
 
 	_ = pm.sendMessage(NewBitfield(pm.storage.GetBitfield(pm.peer.InfoHash)))
 	_ = pm.sendMessage(NewUnChoke())
@@ -196,11 +203,11 @@ func (pm *PeerManager) acceptHandshake() error {
 		return fmt.Errorf("unable to decode handshake: %w", err)
 	}
 	pm.peer.InfoHash = peerHs.infoHash
-	torrent := pm.storage.Get(pm.peer.InfoHash)
-	if torrent == nil {
+	t := pm.storage.Get(pm.peer.InfoHash)
+	if t == nil {
 		return fmt.Errorf("torrent with info hash %s not found", pm.peer.InfoHash)
 	}
-	pm.torrent = torrent
+	pm.torrent = t
 	myHs := newHandshake(pm.peer.InfoHash, pm.clientId)
 	_ = pm.peer.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	defer pm.peer.Conn.SetWriteDeadline(time.Time{})
@@ -257,11 +264,15 @@ func (pm *PeerManager) writeMessages() {
 
 func (pm *PeerManager) download() {
 	for {
-		task, err := pm.dm.generateTask()
-		if err != nil {
-			return
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		task, err := pm.dm.GenerateTask(ctx)
+		cancel()
+		if err == nil {
+			if pm.clientId == PeerID([]byte("-GO0001-remote_peer0")) {
+				pm.log.Warn().Any("task", task).Msg("WTF")
+			}
+			_ = pm.sendMessage(NewRequest(uint32(task.PieceIndex), uint32(task.Begin), uint32(task.Len)))
 		}
-		_ = pm.sendMessage(NewRequest(uint32(task.pieceIndex), uint32(task.begin), uint32(task.len)))
 	}
 }
 
@@ -315,11 +326,12 @@ func (pm *PeerManager) handleMessages() {
 				close(pm.exit) // TODO may panic
 				return
 			}
-			pm.dm.completeTask(downloadTask{
-				pieceIndex: int(index),
-				begin:      int(begin),
-				len:        len(data),
+			pm.dm.CompleteTask(download.Task{
+				PieceIndex: int(index),
+				Begin:      int(begin),
+				Len:        len(data),
 			})
+
 			pm.log.Info().Uint32("piece", index).Msg("block downloaded")
 		case msgCancel:
 		case msgPort:

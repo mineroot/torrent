@@ -1,20 +1,21 @@
-package p2p
+package storage
 
 import (
 	"crypto/sha1"
 	"fmt"
 	"golang.org/x/sync/errgroup"
 	"io"
-	"torrent/bitfield"
+	"torrent/p2p/bitfield"
+	"torrent/p2p/torrent"
 )
 
 type BitfieldCalculator interface {
-	Calculate(r io.ReaderAt, pieceLen int, hashes []Hash) (*bitfield.Bitfield, error)
+	Calculate(r io.ReaderAt, pieceLen int, hashes []torrent.Hash) (*bitfield.Bitfield, error)
 }
 
 type bitfieldConcurrentCalculator struct{}
 
-func (bitfieldConcurrentCalculator) Calculate(r io.ReaderAt, pieceLen int, hashes []Hash) (*bitfield.Bitfield, error) {
+func (bitfieldConcurrentCalculator) Calculate(r io.ReaderAt, pieceLen int, hashes []torrent.Hash) (*bitfield.Bitfield, error) {
 	const bits = 8
 	piecesCount := len(hashes)
 	bf := bitfield.New(piecesCount)

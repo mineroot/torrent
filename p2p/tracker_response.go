@@ -6,10 +6,11 @@ import (
 	"net"
 	"time"
 	"torrent/bencode"
+	"torrent/p2p/torrent"
 )
 
 type trackerResponse struct {
-	infoHash    Hash
+	infoHash    torrent.Hash
 	failure     string
 	warning     string
 	interval    time.Duration
@@ -18,7 +19,7 @@ type trackerResponse struct {
 	peers       Peers
 }
 
-func newTrackerResponse(infoHash Hash) *trackerResponse {
+func newTrackerResponse(infoHash torrent.Hash) *trackerResponse {
 	return &trackerResponse{
 		infoHash: infoHash,
 	}
