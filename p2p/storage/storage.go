@@ -91,7 +91,7 @@ func (s *Storage) Set(infoHash torrent.Hash, torrent *torrent.File) error {
 	}
 
 	// calculate bitfield
-	bf, err := s.calculator.Calculate(file, torrent.PieceLength, torrent.PieceHashes)
+	bf, err := s.calculator.Calculate(file, torrent.PieceHashes, torrent.PieceLength)
 	if err != nil {
 		return fmt.Errorf("unable to calculate bitfield: %w", err)
 	}

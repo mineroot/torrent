@@ -3,6 +3,7 @@ package p2p
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -16,6 +17,7 @@ import (
 	"torrent/p2p/download"
 	"torrent/p2p/storage"
 	"torrent/p2p/torrent"
+	"torrent/utils"
 )
 
 const (
@@ -62,13 +64,13 @@ type PeerManager struct {
 	isAlive          atomic.Bool
 	incomeMessagesCh chan *Message
 	outcomeMessageCh chan *Message
-	bitfield         []byte
 	amChoking        atomic.Bool
 	amInterested     atomic.Bool
 	peerChoking      atomic.Bool
 	peerInterested   atomic.Bool
-	log              zerolog.Logger
+	myBitfield       *bitfield.Bitfield
 	peerBitfield     *bitfield.Bitfield
+	log              zerolog.Logger
 	torrent          *torrent.File
 	exit             chan struct{}
 	dm               *download.Manager
@@ -132,8 +134,9 @@ func (pm *PeerManager) Run(ctx context.Context, wg *sync.WaitGroup) {
 	pm.torrent = pm.storage.Get(pm.peer.InfoHash)
 	pm.file = pm.storage.GetFile(pm.peer.InfoHash)
 	pm.dm = pm.dms.Load(pm)
+	pm.myBitfield = pm.storage.GetBitfield(pm.peer.InfoHash)
 
-	_ = pm.sendMessage(NewBitfield(pm.storage.GetBitfield(pm.peer.InfoHash)))
+	_ = pm.sendMessage(NewBitfield(pm.myBitfield))
 	_ = pm.sendMessage(NewUnChoke())
 
 	go pm.readMessages()
@@ -245,9 +248,11 @@ func (pm *PeerManager) readMessages() {
 func (pm *PeerManager) sendMessage(message *Message) error {
 	// allow to send msgUnChoke and msgBitfield even if amChoking
 	if pm.amChoking.Load() && !(message.ID == msgBitfield || message.ID == msgUnChoke) {
-		return fmt.Errorf("am choking")
+		return fmt.Errorf("i am choking")
 	}
-	pm.log.Debug().Int("messageId", int(message.ID)).Int("payload_len", len(message.Payload)).Msg("mgs sent")
+	pm.log.Debug().
+		Int("messageId", int(message.ID)).Str("payload_len", utils.FormatBytes(uint(len(message.Payload)))).
+		Msg("mgs sent")
 	pm.outcomeMessageCh <- message
 	return nil
 }
@@ -267,10 +272,11 @@ func (pm *PeerManager) download() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		task, err := pm.dm.GenerateTask(ctx)
 		cancel()
+		if errors.Is(err, download.ErrNoMoreTasks) {
+			pm.log.Info().Bool("bitfield_completed", pm.myBitfield.IsCompleted()).Msg("file(s) downloaded")
+			return
+		}
 		if err == nil {
-			if pm.clientId == PeerID([]byte("-GO0001-remote_peer0")) {
-				pm.log.Warn().Any("task", task).Msg("WTF")
-			}
 			_ = pm.sendMessage(NewRequest(uint32(task.PieceIndex), uint32(task.Begin), uint32(task.Len)))
 		}
 	}
@@ -281,7 +287,9 @@ func (pm *PeerManager) handleMessages() {
 		if !pm.IsAlive() {
 			return
 		}
-		pm.log.Debug().Int("messageId", int(message.ID)).Int("payload_len", len(message.Payload)).Msg("mgs received")
+		pm.log.Debug().
+			Int("messageId", int(message.ID)).Str("payload_len", utils.FormatBytes(uint(len(message.Payload)))).
+			Msg("mgs received")
 		switch message.ID {
 		case msgChoke:
 			pm.amChoking.Store(true)
@@ -326,13 +334,22 @@ func (pm *PeerManager) handleMessages() {
 				close(pm.exit) // TODO may panic
 				return
 			}
+			// verify piece
+			ok, err := torrent.VerifyPiece(pm.file, pm.torrent.PieceHashes[index], int(index), pm.torrent.PieceLength)
+			if err != nil {
+				close(pm.exit) // TODO may panic
+			}
+			if ok {
+				pm.myBitfield.SetPiece(int(index))
+				// TODO send HAVE
+			}
+
 			pm.dm.CompleteTask(download.Task{
 				PieceIndex: int(index),
 				Begin:      int(begin),
 				Len:        len(data),
 			})
-
-			pm.log.Info().Uint32("piece", index).Msg("block downloaded")
+			pm.log.Info().Uint32("piece", index).Str("len", utils.FormatBytes(uint(len(data)))).Msg("block downloaded")
 		case msgCancel:
 		case msgPort:
 		default:
@@ -344,10 +361,8 @@ func (pm *PeerManager) handleMessages() {
 func (pm *PeerManager) setLoggerFromCtx(ctx context.Context) {
 	pm.log = log.Ctx(ctx).With().Str("peer_id", string(pm.clientId[:])).Str("remote_peer", pm.peer.Address()).Logger().
 		Hook(zerolog.HookFunc(func(e *zerolog.Event, _ zerolog.Level, _ string) {
-			infoHashStr := ""
-			if pm.peer.InfoHash.IsZero() {
-				infoHashStr = pm.peer.InfoHash.String()
+			if !pm.peer.InfoHash.IsZero() {
+				e.Str("info_hash", pm.peer.InfoHash.String())
 			}
-			e.Str("info_hash", infoHashStr)
 		}))
 }

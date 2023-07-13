@@ -1,8 +1,6 @@
 package storage
 
 import (
-	"crypto/sha1"
-	"fmt"
 	"golang.org/x/sync/errgroup"
 	"io"
 	"torrent/p2p/bitfield"
@@ -10,12 +8,12 @@ import (
 )
 
 type BitfieldCalculator interface {
-	Calculate(r io.ReaderAt, pieceLen int, hashes []torrent.Hash) (*bitfield.Bitfield, error)
+	Calculate(r io.ReaderAt, hashes []torrent.Hash, pieceLen int) (*bitfield.Bitfield, error)
 }
 
 type bitfieldConcurrentCalculator struct{}
 
-func (bitfieldConcurrentCalculator) Calculate(r io.ReaderAt, pieceLen int, hashes []torrent.Hash) (*bitfield.Bitfield, error) {
+func (bitfieldConcurrentCalculator) Calculate(r io.ReaderAt, hashes []torrent.Hash, pieceLen int) (*bitfield.Bitfield, error) {
 	const bits = 8
 	piecesCount := len(hashes)
 	bf := bitfield.New(piecesCount)
@@ -29,16 +27,11 @@ func (bitfieldConcurrentCalculator) Calculate(r io.ReaderAt, pieceLen int, hashe
 		g.Go(func() error {
 			for j := 0; j < bits; j++ {
 				pieceIndex := i*bits + j
-				offset := int64(pieceIndex * pieceLen)
-				buf := make([]byte, pieceLen)
-				n, err := r.ReadAt(buf, offset)
-				if err != nil && err != io.EOF {
-					return fmt.Errorf("unable to read at %d: %w", offset, err)
+				ok, err := torrent.VerifyPiece(r, hashes[pieceIndex], pieceIndex, pieceLen)
+				if err != nil {
+					return err
 				}
-				if n != pieceLen {
-					buf = buf[:n]
-				}
-				if sha1.Sum(buf) == hashes[pieceIndex] {
+				if ok {
 					bf.SetPiece(pieceIndex)
 				}
 			}

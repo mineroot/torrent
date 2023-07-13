@@ -2,6 +2,7 @@ package download
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"torrent/p2p/bitfield"
 	"torrent/p2p/divide"
@@ -10,6 +11,8 @@ import (
 )
 
 const BlockLen = 1 << 14 // 16kB
+
+var ErrNoMoreTasks = fmt.Errorf("no more tasks")
 
 type Managers struct {
 	syncMap sync.Map
@@ -73,6 +76,9 @@ func newManager(items <-chan divide.Item, bitfield *bitfield.Bitfield) *Manager 
 func (m *Manager) GenerateTask(ctx context.Context) (Task, error) {
 	m.lock.RLock()
 	defer m.lock.RUnlock()
+	if len(m.completedTasks) == m.tasksNum {
+		return Task{}, ErrNoMoreTasks
+	}
 	for {
 		select {
 		case task := <-m.downloadTasks:
