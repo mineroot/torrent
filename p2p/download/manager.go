@@ -10,7 +10,7 @@ import (
 	"torrent/p2p/torrent"
 )
 
-const BlockLen = 1 << 14 // 16kB
+const BlockSize = 1 << 14 // 16kB
 
 var ErrNoMoreTasks = fmt.Errorf("no more tasks")
 
@@ -27,7 +27,7 @@ func CreateDownloadManagers(storage storage.Reader) *Managers {
 	managers := &Managers{}
 	for t := range storage.Iterator() {
 		bf := storage.GetBitfield(t.InfoHash)
-		blocks := divide.Divide(t.Length, []int{t.PieceLength, BlockLen})
+		blocks := divide.Divide(t.Length, []int{t.PieceLength, BlockSize})
 		managers.syncMap.Store(t.InfoHash, newManager(blocks, bf))
 	}
 	return managers
@@ -41,15 +41,15 @@ type Task struct {
 
 type Manager struct {
 	downloadTasks  chan Task
-	bitfield       *bitfield.Bitfield
+	bitfield       *bitfield.Bitfield // TODO remove?
 	tasksNum       int
 	lock           sync.RWMutex
 	completedTasks map[Task]struct{}
 }
 
 func newManager(items <-chan divide.Item, bitfield *bitfield.Bitfield) *Manager {
-	approxBlocksCount := bitfield.PiecesCount() * 16
-	tasksTmp := make([]Task, 0, approxBlocksCount)
+	approxBlocksCap := bitfield.PiecesCount() * 16
+	tasksTmp := make([]Task, 0, approxBlocksCap)
 
 	for item := range items {
 		if !bitfield.Has(item.ParentIndex) {
@@ -65,6 +65,9 @@ func newManager(items <-chan divide.Item, bitfield *bitfield.Bitfield) *Manager 
 	for _, task := range tasksTmp {
 		downloadTasks <- task
 	}
+	if cap(downloadTasks) == 0 {
+		close(downloadTasks)
+	}
 	return &Manager{
 		downloadTasks:  downloadTasks,
 		bitfield:       bitfield,
@@ -74,29 +77,40 @@ func newManager(items <-chan divide.Item, bitfield *bitfield.Bitfield) *Manager 
 }
 
 func (m *Manager) GenerateTask(ctx context.Context) (Task, error) {
-	m.lock.RLock()
-	defer m.lock.RUnlock()
-	if len(m.completedTasks) == m.tasksNum {
-		return Task{}, ErrNoMoreTasks
-	}
 	for {
 		select {
-		case task := <-m.downloadTasks:
-			// task not completed - put it back to queue and return it
-			if _, ok := m.completedTasks[task]; !ok {
-				m.downloadTasks <- task
-				return task, nil
-			}
 		case <-ctx.Done():
 			return Task{}, ctx.Err()
+		case task, ok := <-m.downloadTasks:
+			if !ok {
+				return Task{}, ErrNoMoreTasks
+			}
+
+			m.lock.RLock()
+			_, ok = m.completedTasks[task]
+			if !ok {
+				// the task isn't completed
+				// put it back to queue and return it
+				m.downloadTasks <- task
+				m.lock.RUnlock()
+				return task, nil
+			}
+			m.lock.RUnlock()
+			// the task is completed
+			// read from chan again on next iteration until finding a not completed task
 		}
 	}
 }
 
-func (m *Manager) CompleteTask(t Task) {
+func (m *Manager) CompleteTask(t Task) int {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 	if _, ok := m.completedTasks[t]; !ok {
 		m.completedTasks[t] = struct{}{}
 	}
+	completedTasksNum := len(m.completedTasks)
+	if completedTasksNum == m.tasksNum {
+		close(m.downloadTasks) // TODO what if already closed in newManager
+	}
+	return completedTasksNum
 }

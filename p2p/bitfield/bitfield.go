@@ -66,6 +66,7 @@ func (bf *Bitfield) Bitfield() []byte {
 	return buf
 }
 
+// IsCompleted TODO compute and save completed bitfield
 func (bf *Bitfield) IsCompleted() bool {
 	bf.lock.RLock()
 	defer bf.lock.RUnlock()
@@ -84,22 +85,31 @@ func (bf *Bitfield) IsCompleted() bool {
 	return true
 }
 
-func (bf *Bitfield) SetPiece(pieceIndex int) {
+func (bf *Bitfield) Set(pieceIndex int) (isSet bool) {
+	bf.lock.Lock()
+	defer bf.lock.Unlock()
+	if bf.has(pieceIndex) {
+		return
+	}
+	isSet = true
 	byteIndex := pieceIndex / bits
 	if pieceIndex >= bf.piecesCount {
 		panic(fmt.Errorf("pieceIndex is out of range [0, %d)", bf.piecesCount))
 	}
 	bitIndex := pieceIndex % bits
-	bf.lock.Lock()
-	defer bf.lock.Unlock()
 	bf.bitfield[byteIndex] |= 1 << (7 - bitIndex)
+	return
 }
 
 func (bf *Bitfield) Has(pieceIndex int) bool {
-	byteIndex := pieceIndex / bits
-	bitIndex := pieceIndex % bits
 	bf.lock.RLock()
 	defer bf.lock.RUnlock()
+	return bf.has(pieceIndex)
+}
+
+func (bf *Bitfield) has(pieceIndex int) bool {
+	byteIndex := pieceIndex / bits
+	bitIndex := pieceIndex % bits
 	if pieceIndex > bf.piecesCount-1 {
 		panic("pieceIndex out of range")
 	}
