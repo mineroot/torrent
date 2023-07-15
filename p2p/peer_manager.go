@@ -68,24 +68,35 @@ type PeerManager struct {
 	amInterested     atomic.Bool
 	peerChoking      atomic.Bool
 	peerInterested   atomic.Bool
-	myBitfield       *bitfield.Bitfield
+	bitfieldReceived chan struct{}
 	peerBitfield     *bitfield.Bitfield
+	myBitfield       *bitfield.Bitfield
 	log              zerolog.Logger
 	torrent          *torrent.File
-	exit             chan struct{}
 	dm               *download.Manager
 	file             *os.File
 	dms              *download.Managers
+	progress         chan<- *Progress
+	exit             chan struct{}
 }
 
-func NewPeerManager(clientId PeerID, storage storage.Reader, peer Peer, dms *download.Managers) *PeerManager {
+func NewPeerManager(
+	clientId PeerID,
+	storage storage.Reader,
+	peer Peer,
+	dms *download.Managers,
+	progress chan<- *Progress,
+) *PeerManager {
 	pm := &PeerManager{
 		clientId:         clientId,
 		storage:          storage,
 		peer:             peer,
 		incomeMessagesCh: make(chan *Message, 512),
 		outcomeMessageCh: make(chan *Message, 512),
+		bitfieldReceived: make(chan struct{}),
 		dms:              dms,
+		progress:         progress,
+		exit:             make(chan struct{}),
 	}
 	pm.isAlive.Store(true)
 	pm.amChoking.Store(true)
@@ -100,7 +111,6 @@ func (pm *PeerManager) GetHash() torrent.Hash {
 func (pm *PeerManager) Run(ctx context.Context, wg *sync.WaitGroup) {
 	defer wg.Done()
 	defer func() {
-		close(pm.outcomeMessageCh)
 		if pm.peer.Conn != nil {
 			pm.peer.Conn.Close()
 		}
@@ -139,10 +149,12 @@ func (pm *PeerManager) Run(ctx context.Context, wg *sync.WaitGroup) {
 	_ = pm.sendMessage(NewBitfield(pm.myBitfield))
 	_ = pm.sendMessage(NewUnChoke())
 
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	go pm.readMessages()
-	go pm.writeMessages()
-	go pm.handleMessages()
-	go pm.download()
+	go pm.writeMessages(ctx)
+	go pm.handleMessages(ctx)
+	go pm.download(ctx)
 
 	err = pm.sendMessage(NewInterested())
 
@@ -257,103 +269,132 @@ func (pm *PeerManager) sendMessage(message *Message) error {
 	return nil
 }
 
-func (pm *PeerManager) writeMessages() {
-	for message := range pm.outcomeMessageCh {
-		_ = pm.peer.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-		_, err := pm.peer.Conn.Write(message.Encode())
-		if err != nil {
-			pm.log.Error().Err(err).Send()
+func (pm *PeerManager) writeMessages(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case message, ok := <-pm.outcomeMessageCh:
+			if !ok {
+				return
+			}
+			_ = pm.peer.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			_, err := pm.peer.Conn.Write(message.Encode())
+			if err != nil {
+				pm.log.Error().Err(err).Send()
+				return
+			}
 		}
 	}
 }
 
-func (pm *PeerManager) download() {
+func (pm *PeerManager) download(ctx context.Context) {
+	// wait for bitfield
+	select {
+	case <-ctx.Done():
+		return
+	case <-pm.bitfieldReceived:
+	}
 	for {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		// TODO check for choked
 		task, err := pm.dm.GenerateTask(ctx)
-		cancel()
 		if errors.Is(err, download.ErrNoMoreTasks) {
 			pm.log.Info().Bool("bitfield_completed", pm.myBitfield.IsCompleted()).Msg("file(s) downloaded")
 			return
 		}
-		if err == nil {
+		if err != nil {
+			return
+		}
+		// if we don't have a piece but remote peer has, then request it
+		if !pm.myBitfield.Has(task.PieceIndex) && pm.peerBitfield.Has(task.PieceIndex) {
 			_ = pm.sendMessage(NewRequest(uint32(task.PieceIndex), uint32(task.Begin), uint32(task.Len)))
 		}
 	}
 }
 
-func (pm *PeerManager) handleMessages() {
-	for message := range pm.incomeMessagesCh {
-		if !pm.IsAlive() {
+func (pm *PeerManager) handleMessages(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
 			return
-		}
-		pm.log.Debug().
-			Int("messageId", int(message.ID)).Str("payload_len", utils.FormatBytes(uint(len(message.Payload)))).
-			Msg("mgs received")
-		switch message.ID {
-		case msgChoke:
-			pm.amChoking.Store(true)
-		case msgUnChoke:
-			pm.amChoking.Store(false)
-		case msgInterested:
-			pm.peerInterested.Store(true)
-		case msgNotInterested:
-			pm.peerInterested.Store(false)
-		case msgHave:
-		case msgBitfield:
-			bf, err := bitfield.FromPayload(message.Payload, pm.torrent.PiecesCount())
-			if err != nil {
-				close(pm.exit) // TODO may panic
+		case message, ok := <-pm.incomeMessagesCh:
+			if !ok {
 				return
 			}
-			pm.peerBitfield = bf
-		case msgRequest:
-			index := binary.BigEndian.Uint32(message.Payload[:4])
-			begin := binary.BigEndian.Uint32(message.Payload[4:8])
-			length := binary.BigEndian.Uint32(message.Payload[8:12])
-			offset := int(index)*pm.torrent.PieceLength + int(begin)
-			if offset+int(length) > pm.torrent.Length {
-				length = uint32(pm.torrent.Length - offset)
-			}
-			buf := make([]byte, length)
-			_, err := pm.file.ReadAt(buf, int64(offset))
-			if err != nil {
-				pm.log.Error().Uint32("index", index).Uint32("begin", begin).Uint32("length", length).Int("offset", offset).Err(err).Send()
-				close(pm.exit) // TODO may panic
+			if !pm.IsAlive() {
 				return
 			}
-			_ = pm.sendMessage(NewPiece(index, begin, buf))
-		case msgPiece:
-			index := binary.BigEndian.Uint32(message.Payload[:4])
-			begin := binary.BigEndian.Uint32(message.Payload[4:8])
-			data := message.Payload[8:]
-			offset := int(index)*pm.torrent.PieceLength + int(begin)
-			_, err := pm.file.WriteAt(data, int64(offset))
-			if err != nil {
-				pm.log.Error().Err(err).Send()
-				close(pm.exit) // TODO may panic
-				return
-			}
-			// verify piece
-			ok, err := torrent.VerifyPiece(pm.file, pm.torrent.PieceHashes[index], int(index), pm.torrent.PieceLength)
-			if err != nil {
-				close(pm.exit) // TODO may panic
-			}
-			if ok {
-				pm.myBitfield.SetPiece(int(index))
-				// TODO send HAVE
-			}
+			pm.log.Debug().
+				Int("messageId", int(message.ID)).Str("payload_len", utils.FormatBytes(uint(len(message.Payload)))).
+				Msg("mgs received")
+			switch message.ID {
+			case msgChoke:
+				pm.amChoking.Store(true)
+			case msgUnChoke:
+				pm.amChoking.Store(false)
+			case msgInterested:
+				pm.peerInterested.Store(true)
+			case msgNotInterested:
+				pm.peerInterested.Store(false)
+			case msgHave:
+			case msgBitfield:
+				bf, err := bitfield.FromPayload(message.Payload, pm.torrent.PiecesCount())
+				if err != nil {
+					pm.exit <- struct{}{}
+					return
+				}
+				pm.peerBitfield = bf
+				pm.bitfieldReceived <- struct{}{}
+			case msgRequest:
+				index := binary.BigEndian.Uint32(message.Payload[:4])
+				begin := binary.BigEndian.Uint32(message.Payload[4:8])
+				length := binary.BigEndian.Uint32(message.Payload[8:12])
+				offset := int(index)*pm.torrent.PieceLength + int(begin)
+				if offset+int(length) > pm.torrent.Length {
+					length = uint32(pm.torrent.Length - offset)
+				}
+				buf := make([]byte, length)
+				_, err := pm.file.ReadAt(buf, int64(offset))
+				if err != nil {
+					pm.log.Error().Uint32("index", index).Uint32("begin", begin).Uint32("length", length).Int("offset", offset).Err(err).Send()
+					pm.exit <- struct{}{}
+					return
+				}
+				_ = pm.sendMessage(NewPiece(index, begin, buf))
+			case msgPiece:
+				index := int(binary.BigEndian.Uint32(message.Payload[:4]))
+				// discard the piece if we already have it
+				if pm.myBitfield.Has(index) {
+					break
+				}
+				begin := binary.BigEndian.Uint32(message.Payload[4:8])
+				data := message.Payload[8:]
+				offset := index*pm.torrent.PieceLength + int(begin)
+				_, err := pm.file.WriteAt(data, int64(offset))
+				if err != nil {
+					pm.log.Error().Err(err).Send()
+					pm.exit <- struct{}{}
+					return
+				}
 
-			pm.dm.CompleteTask(download.Task{
-				PieceIndex: int(index),
-				Begin:      int(begin),
-				Len:        len(data),
-			})
-			pm.log.Info().Uint32("piece", index).Str("len", utils.FormatBytes(uint(len(data)))).Msg("block downloaded")
-		case msgCancel:
-		case msgPort:
-		default:
-			// ignore
+				task := download.Task{
+					PieceIndex: index,
+					Begin:      int(begin),
+					Len:        len(data),
+				}
+				isVerified, err := pm.dm.CompleteTask(task, pm.file, pm.torrent.PieceHashes[index], pm.torrent.PieceLength)
+				if err != nil {
+					pm.exit <- struct{}{}
+				}
+				if isVerified {
+					pm.progress <- NewProgress(pm.torrent.InfoHash, index)
+				}
+				pm.log.Debug().Int("piece", index).Str("len", utils.FormatBytes(uint(len(data)))).Msg("block downloaded")
+			case msgCancel:
+			case msgPort:
+			default:
+				// ignore
+			}
 		}
 	}
 }

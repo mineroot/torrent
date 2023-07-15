@@ -32,7 +32,7 @@ func (bitfieldConcurrentCalculator) Calculate(r io.ReaderAt, hashes []torrent.Ha
 					return err
 				}
 				if ok {
-					bf.SetPiece(pieceIndex)
+					bf.Set(pieceIndex)
 				}
 			}
 			return nil

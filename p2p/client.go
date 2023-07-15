@@ -37,6 +37,7 @@ type Client struct {
 	intervals     map[torrent.Hash]time.Duration
 	connCh        <-chan net.Conn
 	dms           *download.Managers
+	progress      chan *Progress
 }
 
 func NewClient(id PeerID, port uint16, storage *storage.Storage, announcer Announcer) *Client {
@@ -48,6 +49,7 @@ func NewClient(id PeerID, port uint16, storage *storage.Storage, announcer Annou
 		peersCh:   make(chan Peers, 1),
 		pms:       make(PeerManagers, 0, 512),
 		intervals: make(map[torrent.Hash]time.Duration),
+		progress:  make(chan *Progress, 512),
 	}
 }
 
@@ -73,6 +75,10 @@ func (c *Client) Run(ctx context.Context) error {
 	c.trackerRequests(log.Ctx(ctx).WithContext(context.Background()), torrent.Stopped)
 	_ = c.storage.Close()
 	return ctx.Err()
+}
+
+func (c *Client) Progress() <-chan *Progress {
+	return c.progress
 }
 
 func (c *Client) trackerRegularRequests(ctx context.Context, wg *sync.WaitGroup) {
@@ -114,7 +120,7 @@ func (c *Client) managePeers(ctx context.Context, wg *sync.WaitGroup) {
 				Port:     uint16(addr.Port),
 				Conn:     conn,
 			}
-			pm := NewPeerManager(c.id, c.storage, peer, c.dms)
+			pm := NewPeerManager(c.id, c.storage, peer, c.dms, c.progress)
 			c.pmsLock.Lock()
 			c.pms = append(c.pms, pm)
 			c.pmsLock.Unlock()
@@ -128,7 +134,7 @@ func (c *Client) managePeers(ctx context.Context, wg *sync.WaitGroup) {
 			for _, peer := range peers {
 				foundPms := c.pms.FindByInfoHashAndIp(peer.InfoHash, peer.IP)
 				if len(foundPms) == 0 {
-					pm := NewPeerManager(c.id, c.storage, peer, c.dms)
+					pm := NewPeerManager(c.id, c.storage, peer, c.dms, c.progress)
 					c.pms = append(c.pms, pm)
 					wg.Add(1)
 					go pm.Run(ctx, wg)
