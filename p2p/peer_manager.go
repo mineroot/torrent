@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"golang.org/x/sync/errgroup"
 	"io"
 	"net"
 	"os"
@@ -76,8 +77,7 @@ type PeerManager struct {
 	dm               *download.Manager
 	file             *os.File
 	dms              *download.Managers
-	progress         chan<- *Progress
-	exit             chan struct{}
+	progressCh       chan<- Progress
 }
 
 func NewPeerManager(
@@ -85,18 +85,17 @@ func NewPeerManager(
 	storage storage.Reader,
 	peer Peer,
 	dms *download.Managers,
-	progress chan<- *Progress,
+	progressCh chan<- Progress,
 ) *PeerManager {
 	pm := &PeerManager{
 		clientId:         clientId,
 		storage:          storage,
 		peer:             peer,
 		incomeMessagesCh: make(chan *Message, 512),
-		outcomeMessageCh: make(chan *Message, 512),
+		outcomeMessageCh: make(chan *Message, 32),
 		bitfieldReceived: make(chan struct{}),
 		dms:              dms,
-		progress:         progress,
-		exit:             make(chan struct{}),
+		progressCh:       progressCh,
 	}
 	pm.isAlive.Store(true)
 	pm.amChoking.Store(true)
@@ -110,12 +109,6 @@ func (pm *PeerManager) GetHash() torrent.Hash {
 
 func (pm *PeerManager) Run(ctx context.Context, wg *sync.WaitGroup) {
 	defer wg.Done()
-	defer func() {
-		if pm.peer.Conn != nil {
-			pm.peer.Conn.Close()
-		}
-		pm.isAlive.Store(false)
-	}()
 	if !pm.isAlive.Load() {
 		panic("peer manager is not alive")
 	}
@@ -124,14 +117,12 @@ func (pm *PeerManager) Run(ctx context.Context, wg *sync.WaitGroup) {
 	var err error
 	if pm.peer.Conn == nil {
 		// we initiate connection and send a handshake first
-		err = pm.sendHandshake(ctx)
-		if err != nil {
+		if err = pm.sendHandshake(ctx); err != nil {
 			err = fmt.Errorf("unable to send handshake too remote peer: %w", err)
 		}
 	} else {
 		// remote peer connected to us, and we are waiting for a handshake
-		err = pm.acceptHandshake()
-		if err != nil {
+		if err = pm.acceptHandshake(); err != nil {
 			err = fmt.Errorf("unable to accept handshake from remote peer: %w", err)
 		}
 	}
@@ -146,26 +137,45 @@ func (pm *PeerManager) Run(ctx context.Context, wg *sync.WaitGroup) {
 	pm.dm = pm.dms.Load(pm)
 	pm.myBitfield = pm.storage.GetBitfield(pm.peer.InfoHash)
 
-	_ = pm.sendMessage(NewBitfield(pm.myBitfield))
-	_ = pm.sendMessage(NewUnChoke())
+	// todo send this synchronous
+	_ = pm.sendMessage(ctx, NewBitfield(pm.myBitfield))
+	_ = pm.sendMessage(ctx, NewUnChoke())
+	time.Sleep(time.Second)
+	_ = pm.sendMessage(ctx, NewInterested())
 
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	go pm.readMessages()
-	go pm.writeMessages(ctx)
-	go pm.handleMessages(ctx)
-	go pm.download(ctx)
+	g, ctx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		return pm.readMessages()
+	})
+	g.Go(func() error {
+		return pm.writeMessages(ctx)
+	})
+	g.Go(func() error {
+		return pm.handleMessages(ctx)
+	})
+	g.Go(func() error {
+		return pm.download(ctx)
+	})
+	g.Go(func() error {
+		return pm.kill(ctx)
+	})
 
-	err = pm.sendMessage(NewInterested())
-
-	select {
-	case <-ctx.Done():
-	case <-pm.exit:
+	if err = g.Wait(); err != nil {
+		pm.log.Error().Err(err).Msg("peer manager is dying...")
 	}
 }
 
 func (pm *PeerManager) IsAlive() bool {
 	return pm.isAlive.Load()
+}
+
+func (pm *PeerManager) kill(ctx context.Context) error {
+	<-ctx.Done()
+	pm.isAlive.Store(false)
+	if pm.peer.Conn != nil {
+		pm.peer.Conn.Close()
+	}
+	return nil
 }
 
 func (pm *PeerManager) sendHandshake(ctx context.Context) error {
@@ -230,16 +240,17 @@ func (pm *PeerManager) acceptHandshake() error {
 	return err
 }
 
-func (pm *PeerManager) readMessages() {
+func (pm *PeerManager) readMessages() error {
 	defer close(pm.incomeMessagesCh)
 	_ = pm.peer.Conn.SetReadDeadline(time.Time{})
 	for {
 		bufLen := make([]byte, 4)
 		_, err := io.ReadFull(pm.peer.Conn, bufLen)
 		if err != nil {
-			pm.log.Error().Err(err).Send()
-			return
+			return err
 		}
+		pm.progressCh <- NewConnRead(pm.GetHash(), 1)
+
 		msgLen := binary.BigEndian.Uint32(bufLen)
 		if msgLen == 0 { //keep-alive message
 			continue
@@ -247,9 +258,9 @@ func (pm *PeerManager) readMessages() {
 		msgBuf := make([]byte, msgLen)
 		_, err = io.ReadFull(pm.peer.Conn, msgBuf)
 		if err != nil {
-			pm.log.Error().Err(err).Send()
-			return
+			return err
 		}
+		pm.progressCh <- NewConnRead(pm.GetHash(), int(msgLen))
 		pm.incomeMessagesCh <- &Message{
 			ID:      messageId(msgBuf[0]),
 			Payload: msgBuf[1:],
@@ -257,76 +268,86 @@ func (pm *PeerManager) readMessages() {
 	}
 }
 
-func (pm *PeerManager) sendMessage(message *Message) error {
-	// allow to send msgUnChoke and msgBitfield even if amChoking
-	if pm.amChoking.Load() && !(message.ID == msgBitfield || message.ID == msgUnChoke) {
+func (pm *PeerManager) sendMessage(ctx context.Context, message *Message) error {
+	// allow to send msgUnChoke and msgBitfield and msgInterested even if amChoking
+	if pm.amChoking.Load() && !(message.ID == msgBitfield || message.ID == msgUnChoke || message.ID == msgInterested) {
 		return fmt.Errorf("i am choking")
 	}
 	pm.log.Debug().
 		Int("messageId", int(message.ID)).Str("payload_len", utils.FormatBytes(uint(len(message.Payload)))).
-		Msg("mgs sent")
-	pm.outcomeMessageCh <- message
-	return nil
+		Msg("msg sent")
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case pm.outcomeMessageCh <- message:
+		return nil
+	}
 }
 
-func (pm *PeerManager) writeMessages(ctx context.Context) {
+func (pm *PeerManager) writeMessages(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return ctx.Err()
 		case message, ok := <-pm.outcomeMessageCh:
 			if !ok {
-				return
+				return nil
 			}
 			_ = pm.peer.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			_, err := pm.peer.Conn.Write(message.Encode())
 			if err != nil {
-				pm.log.Error().Err(err).Send()
-				return
+				return err
 			}
+			// min write interval
+			time.Sleep(50 * time.Millisecond)
 		}
 	}
 }
 
-func (pm *PeerManager) download(ctx context.Context) {
+func (pm *PeerManager) download(ctx context.Context) error {
 	// wait for bitfield
 	select {
 	case <-ctx.Done():
-		return
+		return ctx.Err()
 	case <-pm.bitfieldReceived:
 	}
 	for {
-		// TODO check for choked
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if pm.amChoking.Load() {
+			time.Sleep(time.Second)
+			continue
+		}
 		task, err := pm.dm.GenerateTask(ctx)
 		if errors.Is(err, download.ErrNoMoreTasks) {
 			pm.log.Info().Bool("bitfield_completed", pm.myBitfield.IsCompleted()).Msg("file(s) downloaded")
-			return
+			return nil
 		}
 		if err != nil {
-			return
+			return err
 		}
 		// if we don't have a piece but remote peer has, then request it
 		if !pm.myBitfield.Has(task.PieceIndex) && pm.peerBitfield.Has(task.PieceIndex) {
-			_ = pm.sendMessage(NewRequest(uint32(task.PieceIndex), uint32(task.Begin), uint32(task.Len)))
+			_ = pm.sendMessage(ctx, NewRequest(uint32(task.PieceIndex), uint32(task.Begin), uint32(task.Len)))
 		}
 	}
 }
 
-func (pm *PeerManager) handleMessages(ctx context.Context) {
+func (pm *PeerManager) handleMessages(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return ctx.Err()
 		case message, ok := <-pm.incomeMessagesCh:
 			if !ok {
-				return
-			}
-			if !pm.IsAlive() {
-				return
+				return nil
 			}
 			pm.log.Debug().
 				Int("messageId", int(message.ID)).Str("payload_len", utils.FormatBytes(uint(len(message.Payload)))).
-				Msg("mgs received")
+				Msg("msg received")
 			switch message.ID {
 			case msgChoke:
 				pm.amChoking.Store(true)
@@ -340,8 +361,7 @@ func (pm *PeerManager) handleMessages(ctx context.Context) {
 			case msgBitfield:
 				bf, err := bitfield.FromPayload(message.Payload, pm.torrent.PiecesCount())
 				if err != nil {
-					pm.exit <- struct{}{}
-					return
+					return err
 				}
 				pm.peerBitfield = bf
 				pm.bitfieldReceived <- struct{}{}
@@ -356,11 +376,9 @@ func (pm *PeerManager) handleMessages(ctx context.Context) {
 				buf := make([]byte, length)
 				_, err := pm.file.ReadAt(buf, int64(offset))
 				if err != nil {
-					pm.log.Error().Uint32("index", index).Uint32("begin", begin).Uint32("length", length).Int("offset", offset).Err(err).Send()
-					pm.exit <- struct{}{}
-					return
+					return err
 				}
-				_ = pm.sendMessage(NewPiece(index, begin, buf))
+				_ = pm.sendMessage(ctx, NewPiece(index, begin, buf))
 			case msgPiece:
 				index := int(binary.BigEndian.Uint32(message.Payload[:4]))
 				// discard the piece if we already have it
@@ -372,9 +390,7 @@ func (pm *PeerManager) handleMessages(ctx context.Context) {
 				offset := index*pm.torrent.PieceLength + int(begin)
 				_, err := pm.file.WriteAt(data, int64(offset))
 				if err != nil {
-					pm.log.Error().Err(err).Send()
-					pm.exit <- struct{}{}
-					return
+					return err
 				}
 
 				task := download.Task{
@@ -384,16 +400,16 @@ func (pm *PeerManager) handleMessages(ctx context.Context) {
 				}
 				isVerified, err := pm.dm.CompleteTask(task, pm.file, pm.torrent.PieceHashes[index], pm.torrent.PieceLength)
 				if err != nil {
-					pm.exit <- struct{}{}
+					return err
 				}
 				if isVerified {
-					pm.progress <- NewProgress(pm.torrent.InfoHash, index)
+					pm.progressCh <- NewPieceDownloaded(pm.torrent.InfoHash, index)
 				}
 				pm.log.Debug().Int("piece", index).Str("len", utils.FormatBytes(uint(len(data)))).Msg("block downloaded")
 			case msgCancel:
 			case msgPort:
 			default:
-				// ignore
+				pm.log.Warn().Int("message_id", int(message.ID)).Bytes("payload", message.Payload).Msg("unknown message id")
 			}
 		}
 	}

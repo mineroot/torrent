@@ -47,7 +47,6 @@ type Manager struct {
 	allTasks map[Task]struct{}
 
 	lock           sync.RWMutex
-	completedTasks map[Task]struct{}
 	verifiedPieces map[int]struct{}
 }
 
@@ -77,7 +76,6 @@ func newManager(items <-chan divide.Item, bitfield *bitfield.Bitfield) *Manager 
 		bitfield:       bitfield,
 		tasksNum:       len(allTasks),
 		allTasks:       allTasks,
-		completedTasks: make(map[Task]struct{}),
 		verifiedPieces: make(map[int]struct{}),
 	}
 }
@@ -91,19 +89,15 @@ func (m *Manager) GenerateTask(ctx context.Context) (Task, error) {
 			if !ok {
 				return Task{}, ErrNoMoreTasks
 			}
-
 			m.lock.RLock()
-			_, taskOk := m.completedTasks[task]
-			_, pieceOk := m.verifiedPieces[task.PieceIndex]
-			if !taskOk && !pieceOk {
-				// the task isn't completed, and it's piece isn't verified,
-				// put it back to queue and return it
+			if _, pieceOk := m.verifiedPieces[task.PieceIndex]; !pieceOk { // piece is not full or not verified
+				// put its task back to queue and return it
 				m.tasksQ <- task
 				m.lock.RUnlock()
 				return task, nil
 			}
 			m.lock.RUnlock()
-			// the task is completed
+			// piece's task is completed
 			// read from chan again on next iteration until finding a not completed task
 		}
 	}
@@ -120,9 +114,6 @@ func (m *Manager) CompleteTask(
 	}
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	if _, ok := m.completedTasks[task]; !ok {
-		m.completedTasks[task] = struct{}{}
-	}
 	ok, err := torrent.VerifyPiece(file, hash, task.PieceIndex, pieceLength)
 	if err != nil {
 		return
