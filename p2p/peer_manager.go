@@ -295,13 +295,7 @@ func (pm *PeerManager) download(ctx context.Context) {
 		return
 	case <-pm.bitfieldReceived:
 	}
-	pm.log.Info().Msg("DOWNLOAD STARTED")
-	defer pm.log.Info().Msg("DOWNLOAD ENDED")
 	for {
-		if pm.myBitfield.IsCompleted() {
-			a := 0
-			_ = a
-		}
 		// TODO check for choked
 		task, err := pm.dm.GenerateTask(ctx)
 		if errors.Is(err, download.ErrNoMoreTasks) {
@@ -382,24 +376,19 @@ func (pm *PeerManager) handleMessages(ctx context.Context) {
 					pm.exit <- struct{}{}
 					return
 				}
-				// verify piece
-				ok, err := torrent.VerifyPiece(pm.file, pm.torrent.PieceHashes[index], index, pm.torrent.PieceLength)
-				if err != nil {
-					pm.exit <- struct{}{}
-				}
-				if ok {
-					if pm.myBitfield.Set(index) {
-						pm.progress <- NewProgress(pm.torrent.InfoHash, index)
-						// TODO send HAVE
-					}
-				}
 
-				completedTasksNum := pm.dm.CompleteTask(download.Task{
+				task := download.Task{
 					PieceIndex: index,
 					Begin:      int(begin),
 					Len:        len(data),
-				})
-				pm.log.Info().Int("completedTasksNum", completedTasksNum).Msg("task completed")
+				}
+				isVerified, err := pm.dm.CompleteTask(task, pm.file, pm.torrent.PieceHashes[index], pm.torrent.PieceLength)
+				if err != nil {
+					pm.exit <- struct{}{}
+				}
+				if isVerified {
+					pm.progress <- NewProgress(pm.torrent.InfoHash, index)
+				}
 				pm.log.Debug().Int("piece", index).Str("len", utils.FormatBytes(uint(len(data)))).Msg("block downloaded")
 			case msgCancel:
 			case msgPort:

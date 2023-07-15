@@ -3,6 +3,7 @@ package download
 import (
 	"context"
 	"fmt"
+	"io"
 	"sync"
 	"torrent/p2p/bitfield"
 	"torrent/p2p/divide"
@@ -40,39 +41,44 @@ type Task struct {
 }
 
 type Manager struct {
-	downloadTasks  chan Task
-	bitfield       *bitfield.Bitfield // TODO remove?
-	tasksNum       int
+	tasksQ   chan Task
+	bitfield *bitfield.Bitfield
+	tasksNum int
+	allTasks map[Task]struct{}
+
 	lock           sync.RWMutex
 	completedTasks map[Task]struct{}
+	verifiedPieces map[int]struct{}
 }
 
 func newManager(items <-chan divide.Item, bitfield *bitfield.Bitfield) *Manager {
 	approxBlocksCap := bitfield.PiecesCount() * 16
-	tasksTmp := make([]Task, 0, approxBlocksCap)
+	allTasks := make(map[Task]struct{}, approxBlocksCap)
 
 	for item := range items {
 		if !bitfield.Has(item.ParentIndex) {
-			tasksTmp = append(tasksTmp, Task{
+			allTasks[Task{
 				PieceIndex: item.ParentIndex,
 				Begin:      item.Begin,
 				Len:        item.Len,
-			})
+			}] = struct{}{}
 		}
 	}
 
-	downloadTasks := make(chan Task, len(tasksTmp))
-	for _, task := range tasksTmp {
-		downloadTasks <- task
+	tasksQ := make(chan Task, len(allTasks))
+	for task := range allTasks {
+		tasksQ <- task
 	}
-	if cap(downloadTasks) == 0 {
-		close(downloadTasks)
+	if cap(tasksQ) == 0 {
+		close(tasksQ)
 	}
 	return &Manager{
-		downloadTasks:  downloadTasks,
+		tasksQ:         tasksQ,
 		bitfield:       bitfield,
-		tasksNum:       len(tasksTmp),
+		tasksNum:       len(allTasks),
+		allTasks:       allTasks,
 		completedTasks: make(map[Task]struct{}),
+		verifiedPieces: make(map[int]struct{}),
 	}
 }
 
@@ -81,17 +87,18 @@ func (m *Manager) GenerateTask(ctx context.Context) (Task, error) {
 		select {
 		case <-ctx.Done():
 			return Task{}, ctx.Err()
-		case task, ok := <-m.downloadTasks:
+		case task, ok := <-m.tasksQ:
 			if !ok {
 				return Task{}, ErrNoMoreTasks
 			}
 
 			m.lock.RLock()
-			_, ok = m.completedTasks[task]
-			if !ok {
-				// the task isn't completed
+			_, taskOk := m.completedTasks[task]
+			_, pieceOk := m.verifiedPieces[task.PieceIndex]
+			if !taskOk && !pieceOk {
+				// the task isn't completed, and it's piece isn't verified,
 				// put it back to queue and return it
-				m.downloadTasks <- task
+				m.tasksQ <- task
 				m.lock.RUnlock()
 				return task, nil
 			}
@@ -102,15 +109,30 @@ func (m *Manager) GenerateTask(ctx context.Context) (Task, error) {
 	}
 }
 
-func (m *Manager) CompleteTask(t Task) int {
+func (m *Manager) CompleteTask(
+	task Task,
+	file io.ReaderAt,
+	hash torrent.Hash,
+	pieceLength int,
+) (pieceVerified bool, err error) {
+	if _, ok := m.allTasks[task]; !ok {
+		return
+	}
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	if _, ok := m.completedTasks[t]; !ok {
-		m.completedTasks[t] = struct{}{}
+	if _, ok := m.completedTasks[task]; !ok {
+		m.completedTasks[task] = struct{}{}
 	}
-	completedTasksNum := len(m.completedTasks)
-	if completedTasksNum == m.tasksNum {
-		close(m.downloadTasks) // TODO what if already closed in newManager
+	ok, err := torrent.VerifyPiece(file, hash, task.PieceIndex, pieceLength)
+	if err != nil {
+		return
 	}
-	return completedTasksNum
+	if ok && m.bitfield.Set(task.PieceIndex) {
+		pieceVerified = true
+		m.verifiedPieces[task.PieceIndex] = struct{}{}
+		if m.bitfield.IsCompleted() {
+			close(m.tasksQ)
+		}
+	}
+	return
 }
