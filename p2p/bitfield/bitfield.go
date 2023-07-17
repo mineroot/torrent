@@ -1,6 +1,7 @@
 package bitfield
 
 import (
+	"bytes"
 	"fmt"
 	"sync"
 )
@@ -10,9 +11,10 @@ const bits = 8
 var ErrMalformedBitfield = fmt.Errorf("malformed bitfield")
 
 type Bitfield struct {
-	piecesCount int
-	lock        sync.RWMutex
-	bitfield    []byte
+	piecesCount       int
+	lock              sync.RWMutex
+	bitfield          []byte
+	completedBitfield []byte
 }
 
 func New(piecesCount int) *Bitfield {
@@ -20,18 +22,13 @@ func New(piecesCount int) *Bitfield {
 	if piecesCount%bits != 0 {
 		bitfieldSize++
 	}
-	return &Bitfield{
-		piecesCount: piecesCount,
-		bitfield:    make([]byte, bitfieldSize),
+	bitfield := Bitfield{
+		piecesCount:       piecesCount,
+		bitfield:          make([]byte, bitfieldSize),
+		completedBitfield: make([]byte, bitfieldSize),
 	}
-}
-
-func (bf *Bitfield) BitfieldSize() int {
-	return len(bf.bitfield)
-}
-
-func (bf *Bitfield) PiecesCount() int {
-	return bf.piecesCount
+	bitfield.initCompletedBitfield()
+	return &bitfield
 }
 
 func FromPayload(payload []byte, piecesCount int) (*Bitfield, error) {
@@ -54,10 +51,21 @@ func FromPayload(payload []byte, piecesCount int) (*Bitfield, error) {
 		}
 	}
 
-	return &Bitfield{
-		piecesCount: piecesCount,
-		bitfield:    b,
-	}, nil
+	bitfield := &Bitfield{
+		piecesCount:       piecesCount,
+		bitfield:          b,
+		completedBitfield: make([]byte, bitfieldSize),
+	}
+	bitfield.initCompletedBitfield()
+	return bitfield, nil
+}
+
+func (bf *Bitfield) BitfieldSize() int {
+	return len(bf.bitfield)
+}
+
+func (bf *Bitfield) PiecesCount() int {
+	return bf.piecesCount
 }
 
 func (bf *Bitfield) Bitfield() []byte {
@@ -66,32 +74,15 @@ func (bf *Bitfield) Bitfield() []byte {
 	return buf
 }
 
-// IsCompleted TODO compute and save completed bitfield
 func (bf *Bitfield) IsCompleted() bool {
 	bf.lock.RLock()
 	defer bf.lock.RUnlock()
-	hasSpareBytes := bf.piecesCount%bits != 0
-	for i, b := range bf.bitfield {
-		val := byte(0xFF)
-		isLastByte := i == len(bf.bitfield)-1
-		if hasSpareBytes && isLastByte {
-			lastBytePiecesCount := bf.piecesCount % bits
-			val = val>>lastBytePiecesCount ^ val
-		}
-		if b != val {
-			return false
-		}
-	}
-	return true
+	return bytes.Equal(bf.bitfield, bf.completedBitfield)
 }
 
-func (bf *Bitfield) Set(pieceIndex int) (isSet bool) {
+func (bf *Bitfield) Set(pieceIndex int) {
 	bf.lock.Lock()
 	defer bf.lock.Unlock()
-	if bf.has(pieceIndex) {
-		return
-	}
-	isSet = true
 	byteIndex := pieceIndex / bits
 	if pieceIndex >= bf.piecesCount {
 		panic(fmt.Errorf("pieceIndex is out of range [0, %d)", bf.piecesCount))
@@ -104,10 +95,6 @@ func (bf *Bitfield) Set(pieceIndex int) (isSet bool) {
 func (bf *Bitfield) Has(pieceIndex int) bool {
 	bf.lock.RLock()
 	defer bf.lock.RUnlock()
-	return bf.has(pieceIndex)
-}
-
-func (bf *Bitfield) has(pieceIndex int) bool {
 	byteIndex := pieceIndex / bits
 	bitIndex := pieceIndex % bits
 	if pieceIndex > bf.piecesCount-1 {
@@ -116,4 +103,17 @@ func (bf *Bitfield) has(pieceIndex int) bool {
 	byteValue := bf.bitfield[byteIndex]
 	mask := byte(1 << (7 - bitIndex))
 	return (byteValue & mask) != 0
+}
+
+func (bf *Bitfield) initCompletedBitfield() {
+	hasSpareBytes := bf.piecesCount%bits != 0
+	for i := range bf.bitfield {
+		val := byte(0xFF)
+		isLastByte := i == len(bf.bitfield)-1
+		if hasSpareBytes && isLastByte {
+			lastBytePiecesCount := bf.piecesCount % bits
+			val = val>>lastBytePiecesCount ^ val
+		}
+		bf.completedBitfield[i] = val
+	}
 }

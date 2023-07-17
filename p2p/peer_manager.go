@@ -59,25 +59,25 @@ func (pms PeerManagers) FindAlive() PeerManagers {
 }
 
 type PeerManager struct {
-	clientId         PeerID
-	storage          storage.Reader
-	peer             Peer
-	isAlive          atomic.Bool
-	incomeMessagesCh chan *Message
-	outcomeMessageCh chan *Message
-	amChoking        atomic.Bool
-	amInterested     atomic.Bool
-	peerChoking      atomic.Bool
-	peerInterested   atomic.Bool
-	bitfieldReceived chan struct{}
-	peerBitfield     *bitfield.Bitfield
-	myBitfield       *bitfield.Bitfield
-	log              zerolog.Logger
-	torrent          *torrent.File
-	dm               *download.Manager
-	file             *os.File
-	dms              *download.Managers
-	progressCh       chan<- Progress
+	clientId          PeerID
+	storage           storage.Reader
+	peer              Peer
+	isAlive           atomic.Bool
+	incomeMessagesCh  chan *Message
+	outcomeMessageCh  chan *Message
+	amChoking         atomic.Bool
+	amInterested      atomic.Bool
+	peerChoking       atomic.Bool
+	peerInterested    atomic.Bool
+	bitfieldReceived  chan struct{}
+	peerBitfield      *bitfield.Bitfield
+	myBitfield        *bitfield.Bitfield
+	log               zerolog.Logger
+	torrent           *torrent.File
+	dm                *download.Manager
+	file              *os.File
+	dms               *download.Managers
+	progressConnReads chan<- *ProgressConnRead
 }
 
 func NewPeerManager(
@@ -85,17 +85,17 @@ func NewPeerManager(
 	storage storage.Reader,
 	peer Peer,
 	dms *download.Managers,
-	progressCh chan<- Progress,
+	progressConnReads chan<- *ProgressConnRead,
 ) *PeerManager {
 	pm := &PeerManager{
-		clientId:         clientId,
-		storage:          storage,
-		peer:             peer,
-		incomeMessagesCh: make(chan *Message, 512),
-		outcomeMessageCh: make(chan *Message, 32),
-		bitfieldReceived: make(chan struct{}),
-		dms:              dms,
-		progressCh:       progressCh,
+		clientId:          clientId,
+		storage:           storage,
+		peer:              peer,
+		incomeMessagesCh:  make(chan *Message, 512),
+		outcomeMessageCh:  make(chan *Message, 32),
+		bitfieldReceived:  make(chan struct{}),
+		dms:               dms,
+		progressConnReads: progressConnReads,
 	}
 	pm.isAlive.Store(true)
 	pm.amChoking.Store(true)
@@ -244,23 +244,25 @@ func (pm *PeerManager) readMessages() error {
 	defer close(pm.incomeMessagesCh)
 	_ = pm.peer.Conn.SetReadDeadline(time.Time{})
 	for {
+		bytesRead := 0
 		bufLen := make([]byte, 4)
-		_, err := io.ReadFull(pm.peer.Conn, bufLen)
+		n, err := io.ReadFull(pm.peer.Conn, bufLen)
 		if err != nil {
 			return err
 		}
-		pm.progressCh <- NewConnRead(pm.GetHash(), 1)
-
+		bytesRead += n
 		msgLen := binary.BigEndian.Uint32(bufLen)
 		if msgLen == 0 { //keep-alive message
+			pm.progressConnReads <- NewProgressConnRead(pm.GetHash(), bytesRead)
 			continue
 		}
 		msgBuf := make([]byte, msgLen)
-		_, err = io.ReadFull(pm.peer.Conn, msgBuf)
+		n, err = io.ReadFull(pm.peer.Conn, msgBuf)
 		if err != nil {
 			return err
 		}
-		pm.progressCh <- NewConnRead(pm.GetHash(), int(msgLen))
+		bytesRead += n
+		pm.progressConnReads <- NewProgressConnRead(pm.GetHash(), bytesRead)
 		pm.incomeMessagesCh <- &Message{
 			ID:      messageId(msgBuf[0]),
 			Payload: msgBuf[1:],
@@ -298,8 +300,6 @@ func (pm *PeerManager) writeMessages(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			// min write interval
-			time.Sleep(50 * time.Millisecond)
 		}
 	}
 }
@@ -321,8 +321,8 @@ func (pm *PeerManager) download(ctx context.Context) error {
 			time.Sleep(time.Second)
 			continue
 		}
-		task, err := pm.dm.GenerateTask(ctx)
-		if errors.Is(err, download.ErrNoMoreTasks) {
+		task, err := pm.dm.GenerateBlock(ctx)
+		if errors.Is(err, download.ErrNoMoreBlocks) {
 			pm.log.Info().Bool("bitfield_completed", pm.myBitfield.IsCompleted()).Msg("file(s) downloaded")
 			return nil
 		}
@@ -332,6 +332,7 @@ func (pm *PeerManager) download(ctx context.Context) error {
 		// if we don't have a piece but remote peer has, then request it
 		if !pm.myBitfield.Has(task.PieceIndex) && pm.peerBitfield.Has(task.PieceIndex) {
 			_ = pm.sendMessage(ctx, NewRequest(uint32(task.PieceIndex), uint32(task.Begin), uint32(task.Len)))
+			time.Sleep(50 * time.Millisecond)
 		}
 	}
 }
@@ -383,6 +384,7 @@ func (pm *PeerManager) handleMessages(ctx context.Context) error {
 				index := int(binary.BigEndian.Uint32(message.Payload[:4]))
 				// discard the piece if we already have it
 				if pm.myBitfield.Has(index) {
+					pm.log.Warn().Int("piece", index).Msg("block discarded")
 					break
 				}
 				begin := binary.BigEndian.Uint32(message.Payload[4:8])
@@ -393,17 +395,17 @@ func (pm *PeerManager) handleMessages(ctx context.Context) error {
 					return err
 				}
 
-				task := download.Task{
+				block := download.Block{
 					PieceIndex: index,
 					Begin:      int(begin),
 					Len:        len(data),
 				}
-				isVerified, err := pm.dm.CompleteTask(task, pm.file, pm.torrent.PieceHashes[index], pm.torrent.PieceLength)
+				isVerified, err := pm.dm.MarkAsDownloaded(block, pm.file, pm.torrent.PieceHashes[index], pm.torrent.PieceLength)
 				if err != nil {
 					return err
 				}
 				if isVerified {
-					pm.progressCh <- NewPieceDownloaded(pm.torrent.InfoHash, index)
+					//pm.progressConnRead <- NewProgressPieceDownloaded(pm.torrent.InfoHash, index)
 				}
 				pm.log.Debug().Int("piece", index).Str("len", utils.FormatBytes(uint(len(data)))).Msg("block downloaded")
 			case msgCancel:

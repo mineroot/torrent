@@ -13,7 +13,7 @@ import (
 
 const BlockSize = 1 << 14 // 16kB
 
-var ErrNoMoreTasks = fmt.Errorf("no more tasks")
+var ErrNoMoreBlocks = fmt.Errorf("no more blocks")
 
 type Managers struct {
 	syncMap sync.Map
@@ -34,96 +34,138 @@ func CreateDownloadManagers(storage storage.Reader) *Managers {
 	return managers
 }
 
-type Task struct {
+type Block struct {
 	PieceIndex int
 	Begin      int
 	Len        int
 }
 
 type Manager struct {
-	tasksQ   chan Task
-	bitfield *bitfield.Bitfield
-	tasksNum int
-	allTasks map[Task]struct{}
+	bitfield      *bitfield.Bitfield
+	blocksByPiece map[int]map[Block]struct{}
+	blocksQ       chan Block
 
-	lock           sync.RWMutex
-	verifiedPieces map[int]struct{}
+	lock             sync.RWMutex
+	downloadedBlocks map[Block]struct{}
 }
 
 func newManager(items <-chan divide.Item, bitfield *bitfield.Bitfield) *Manager {
-	approxBlocksCap := bitfield.PiecesCount() * 16
-	allTasks := make(map[Task]struct{}, approxBlocksCap)
+	blocksByPiece := make(map[int]map[Block]struct{}, bitfield.PiecesCount())
 
+	blocksCount := 0
 	for item := range items {
 		if !bitfield.Has(item.ParentIndex) {
-			allTasks[Task{
+			blocks, ok := blocksByPiece[item.ParentIndex]
+			if !ok {
+				blocks = make(map[Block]struct{})
+				blocksByPiece[item.ParentIndex] = blocks
+			}
+			blocks[Block{
 				PieceIndex: item.ParentIndex,
 				Begin:      item.Begin,
 				Len:        item.Len,
 			}] = struct{}{}
+			blocksCount++
 		}
 	}
 
-	tasksQ := make(chan Task, len(allTasks))
-	for task := range allTasks {
-		tasksQ <- task
+	blocksQ := make(chan Block, blocksCount)
+	for _, blocks := range blocksByPiece {
+		for block := range blocks {
+			blocksQ <- block
+		}
 	}
-	if cap(tasksQ) == 0 {
-		close(tasksQ)
+	if cap(blocksQ) == 0 {
+		close(blocksQ)
 	}
 	return &Manager{
-		tasksQ:         tasksQ,
-		bitfield:       bitfield,
-		tasksNum:       len(allTasks),
-		allTasks:       allTasks,
-		verifiedPieces: make(map[int]struct{}),
+		bitfield:         bitfield,
+		blocksByPiece:    blocksByPiece,
+		blocksQ:          blocksQ,
+		downloadedBlocks: make(map[Block]struct{}),
 	}
 }
 
-func (m *Manager) GenerateTask(ctx context.Context) (Task, error) {
+func (m *Manager) GenerateBlock(ctx context.Context) (Block, error) {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
 	for {
 		select {
 		case <-ctx.Done():
-			return Task{}, ctx.Err()
-		case task, ok := <-m.tasksQ:
+			return Block{}, ctx.Err()
+		case block, ok := <-m.blocksQ:
 			if !ok {
-				return Task{}, ErrNoMoreTasks
+				return Block{}, ErrNoMoreBlocks
 			}
-			m.lock.RLock()
-			if _, pieceOk := m.verifiedPieces[task.PieceIndex]; !pieceOk { // piece is not full or not verified
-				// put its task back to queue and return it
-				m.tasksQ <- task
-				m.lock.RUnlock()
-				return task, nil
+			if _, ok := m.downloadedBlocks[block]; !ok { // block isn't downloaded yet
+				// put it back to queue and return it
+				m.blocksQ <- block
+				return block, nil
 			}
-			m.lock.RUnlock()
-			// piece's task is completed
-			// read from chan again on next iteration until finding a not completed task
+			// block is downloaded
+			// read from chan again on next iteration until finding a not completed block
 		}
 	}
 }
 
-func (m *Manager) CompleteTask(
-	task Task,
-	file io.ReaderAt,
+func (m *Manager) MarkAsDownloaded(
+	block Block,
+	r io.ReaderAt,
 	hash torrent.Hash,
-	pieceLength int,
+	pieceSize int,
 ) (pieceVerified bool, err error) {
-	if _, ok := m.allTasks[task]; !ok {
-		return
-	}
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	ok, err := torrent.VerifyPiece(file, hash, task.PieceIndex, pieceLength)
+	if !m.hasBlock(block) {
+		return
+	}
+	if _, blockDownloaded := m.downloadedBlocks[block]; blockDownloaded {
+		return
+	}
+	m.downloadedBlocks[block] = struct{}{}
+	pieceDownloaded := true
+	for block = range m.blocksByPiece[block.PieceIndex] {
+		if _, blockDownloaded := m.downloadedBlocks[block]; !blockDownloaded {
+			pieceDownloaded = false
+			break
+		}
+	}
+	if !pieceDownloaded {
+		return
+	}
+
+	pieceVerified, err = torrent.VerifyPiece(r, hash, block.PieceIndex, pieceSize)
 	if err != nil {
 		return
 	}
-	if ok && m.bitfield.Set(task.PieceIndex) {
-		pieceVerified = true
-		m.verifiedPieces[task.PieceIndex] = struct{}{}
-		if m.bitfield.IsCompleted() {
-			close(m.tasksQ)
+	if !pieceVerified {
+		// if piece's hash doesn't match
+		for block = range m.blocksByPiece[block.PieceIndex] {
+			// delete all piece's blocks from a map and put them back to queue
+			delete(m.downloadedBlocks, block)
+			m.blocksQ <- block
 		}
+		return
+	}
+
+	// if a piece has zero block(s), they may not have downloaded yet, but a piece has already been verified
+	// in this case mark all remaining piece's blocks as downloaded
+	for block = range m.blocksByPiece[block.PieceIndex] {
+		m.downloadedBlocks[block] = struct{}{}
+	}
+
+	m.bitfield.Set(block.PieceIndex)
+	if m.bitfield.IsCompleted() {
+		close(m.blocksQ)
 	}
 	return
+}
+
+func (m *Manager) hasBlock(block Block) bool {
+	blocks, ok := m.blocksByPiece[block.PieceIndex]
+	if !ok {
+		return false
+	}
+	_, ok = blocks[block]
+	return ok
 }

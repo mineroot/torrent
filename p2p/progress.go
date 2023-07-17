@@ -2,49 +2,36 @@ package p2p
 
 import "torrent/p2p/torrent"
 
-type ProgressID int
-
-const (
-	ProgressPieceDownloaded ProgressID = iota
-	ProgressConnRead
-)
-
-type Progress interface {
-	ID() ProgressID
-	Hash() torrent.Hash
-	Value() any
+type ProgressPieceDownloaded struct {
+	Hash torrent.Hash
 }
 
-type progress struct {
-	id    ProgressID
-	hash  torrent.Hash
-	value int
-}
-
-func (p *progress) ID() ProgressID {
-	return p.id
-}
-
-func (p *progress) Hash() torrent.Hash {
-	return p.hash
-}
-
-func (p *progress) Value() any {
-	return p.value
-}
-
-func NewPieceDownloaded(hash torrent.Hash, pieceIndex int) Progress {
-	return &progress{
-		id:    ProgressPieceDownloaded,
-		hash:  hash,
-		value: pieceIndex,
+func NewProgressPieceDownloaded(hash torrent.Hash) *ProgressPieceDownloaded {
+	return &ProgressPieceDownloaded{
+		Hash: hash,
 	}
 }
 
-func NewConnRead(hash torrent.Hash, length int) Progress {
-	return &progress{
-		id:    ProgressConnRead,
-		hash:  hash,
-		value: length,
+type ProgressConnRead struct {
+	Hash  torrent.Hash
+	Bytes int
+}
+
+func NewProgressConnRead(hash torrent.Hash, bytesRead int) *ProgressConnRead {
+	return &ProgressConnRead{
+		Hash:  hash,
+		Bytes: bytesRead,
+	}
+}
+
+type ProgressSpeed struct {
+	Hash  torrent.Hash
+	Speed int
+}
+
+func NewProgressSpeed(hash torrent.Hash, speed int) *ProgressSpeed {
+	return &ProgressSpeed{
+		Hash:  hash,
+		Speed: speed,
 	}
 }

@@ -11,7 +11,6 @@ import (
 	"os"
 	"strconv"
 	"sync"
-	"time"
 	"torrent/p2p"
 	"torrent/p2p/storage"
 	"torrent/p2p/torrent"
@@ -28,7 +27,7 @@ func main() {
 	}
 	defer logFile.Close()
 
-	l := log.Output(zerolog.ConsoleWriter{Out: logFile}).With().Caller().Logger().Level(zerolog.DebugLevel)
+	l := log.Output(zerolog.ConsoleWriter{Out: logFile}).With().Caller().Logger().Level(zerolog.InfoLevel)
 	t, err := torrent.Open("testdata/debian-12.0.0-amd64-netinst.iso.torrent", "")
 	//t, err := torrent.Open("/home/mineroot/Desktop/debian-11.5.0-amd64-netinst.iso.torrent", "")
 	if err != nil {
@@ -52,7 +51,7 @@ func main() {
 		_ = client.Run(ctx)
 	}()
 
-	ui := createUi(s, client.Progress())
+	ui := createUi(s, client.ProgressSpeed())
 	ui.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		if event.Key() == tcell.KeyCtrlC || event.Key() == tcell.KeyEscape {
 			cancel()
@@ -73,7 +72,7 @@ func main() {
 	fmt.Println(" done")
 }
 
-func createUi(s storage.Reader, progressCh <-chan p2p.Progress) *tview.Application {
+func createUi(s storage.Reader, progressSpeedCh <-chan *p2p.ProgressSpeed) *tview.Application {
 	// TODO refactor
 	app := tview.NewApplication()
 	table := tview.NewTable().
@@ -102,52 +101,35 @@ func createUi(s storage.Reader, progressCh <-chan p2p.Progress) *tview.Applicati
 		row++
 	}
 	go func() {
-		go func() {
-			totalByHash := make(map[torrent.Hash]int)
-			ticker := time.NewTicker(3 * time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					for hash, _ := range totalByHash {
-						row, ok := rowByHash[hash]
-						if !ok {
-							continue
-						}
-						cell := table.GetCell(row, 4)
-						app.QueueUpdateDraw(func() {
-							speed := fmt.Sprintf("%s/s", utils.FormatBytes(uint(totalByHash[hash]/3)))
-							cell.SetText(speed)
-						})
-						totalByHash[hash] = 0
-					}
-				case progress := <-progressCh:
-					if progress.ID() != p2p.ProgressConnRead {
-						break
-					}
-					totalByHash[progress.Hash()] += progress.Value().(int)
-				}
-			}
-		}()
-		for {
-			progress := <-progressCh
-			row, ok := rowByHash[progress.Hash()]
-			if !ok {
-				continue
-			}
-			switch progress.ID() {
-			case p2p.ProgressPieceDownloaded:
-				cell := table.GetCell(row, 3)
-				downloadedCount, _ := strconv.Atoi(cell.Text)
-				downloadedCount++
-				app.QueueUpdateDraw(func() {
-					cell.SetText(strconv.Itoa(downloadedCount))
-				})
-			case p2p.ProgressConnRead:
-
-			}
+		for progressSpeed := range progressSpeedCh {
+			row := rowByHash[progressSpeed.Hash]
+			cell := table.GetCell(row, 4)
+			app.QueueUpdateDraw(func() {
+				speed := fmt.Sprintf("%s/s", utils.FormatBytes(uint(progressSpeed.Speed)))
+				cell.SetText(speed)
+			})
 		}
 	}()
+	//go func() {
+	//	for {
+	//		progress := <-progressCh
+	//		row, ok := rowByHash[progress.Hash()]
+	//		if !ok {
+	//			continue
+	//		}
+	//		switch progress.ID() {
+	//		case p2p.ProgressPieceDownloaded:
+	//			cell := table.GetCell(row, 3)
+	//			downloadedCount, _ := strconv.Atoi(cell.Text)
+	//			downloadedCount++
+	//			app.QueueUpdateDraw(func() {
+	//				cell.SetText(strconv.Itoa(downloadedCount))
+	//			})
+	//		case p2p.ProgressConnRead:
+	//
+	//		}
+	//	}
+	//}()
 
 	table.Select(0, 0).SetFixed(1, 1).SetDoneFunc(func(key tcell.Key) {
 		if key == tcell.KeyEnter {
