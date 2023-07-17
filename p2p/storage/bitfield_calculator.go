@@ -17,10 +17,6 @@ func (bitfieldConcurrentCalculator) Calculate(r io.ReaderAt, hashes []torrent.Ha
 	const bits = 8
 	piecesCount := len(hashes)
 	bf := bitfield.New(piecesCount)
-	if r == nil {
-		// return bitfield with all zeroes
-		return bf, nil
-	}
 	g := new(errgroup.Group)
 	for i := 0; i < bf.BitfieldSize(); i++ {
 		i := i

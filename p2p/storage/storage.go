@@ -2,6 +2,7 @@ package storage
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -89,22 +90,24 @@ func (s *Storage) Set(infoHash torrent.Hash, torrent *torrent.File) error {
 	if err != nil {
 		return fmt.Errorf("unable not open file %s: %w", path, err)
 	}
-
-	// calculate bitfield
-	bf, err := s.calculator.Calculate(file, torrent.PieceHashes, torrent.PieceLength)
-	if err != nil {
-		return fmt.Errorf("unable to calculate bitfield: %w", err)
-	}
-
-	// fill file with zeros if just created
 	fInfo, err := file.Stat()
 	if err != nil {
 		return fmt.Errorf("unable to get file stat")
 	}
+
+	var bf *bitfield.Bitfield
 	if fInfo.Size() == 0 {
-		_, err = file.Write(make([]byte, torrent.Length))
+		// fill file with zeros if just created
+		if err = s.fillFile(file, torrent); err != nil {
+			return fmt.Errorf("unable to fill file with zeros: %w", err)
+		}
+		// create empty bitfield
+		bf = bitfield.New(torrent.PiecesCount())
+	} else {
+		// calculate bitfield
+		bf, err = s.calculator.Calculate(file, torrent.PieceHashes, torrent.PieceLength)
 		if err != nil {
-			return fmt.Errorf("unable to fill file with zeros")
+			return fmt.Errorf("unable to calculate bitfield: %w", err)
 		}
 	}
 	// add to storage all torrent's bitfield, file handler and torrent itself
@@ -123,4 +126,32 @@ func (s *Storage) Close() error {
 		err = file.Close()
 	}
 	return err
+}
+
+func (s *Storage) fillFile(w io.WriterAt, torrent *torrent.File) error {
+	var pieceIndex, written int
+	var off int64
+	zeroesChunk := make([]byte, torrent.PieceLength)
+	for pieceIndex = 0; pieceIndex < torrent.PiecesCount()-1; pieceIndex++ {
+		off = int64(pieceIndex * torrent.PieceLength)
+		n, err := w.WriteAt(zeroesChunk, off)
+		if err != nil {
+			return err
+		}
+		written += n
+	}
+
+	// write last piece
+	off = int64(pieceIndex * torrent.PieceLength)
+	remainingBytes := torrent.Length - int(off)
+	zeroesChunk = make([]byte, remainingBytes)
+	n, err := w.WriteAt(zeroesChunk, off)
+	if err != nil {
+		return err
+	}
+	written += n
+	if written != torrent.Length {
+		return fmt.Errorf("written %d, expected %d", written, torrent.Length)
+	}
+	return nil
 }
