@@ -51,7 +51,6 @@ type Manager struct {
 
 func newManager(items <-chan divide.Item, bitfield *bitfield.Bitfield) *Manager {
 	blocksByPiece := make(map[int]map[Block]struct{}, bitfield.PiecesCount())
-
 	blocksCount := 0
 	for item := range items {
 		if !bitfield.Has(item.ParentIndex) {
@@ -122,7 +121,9 @@ func (m *Manager) MarkAsDownloaded(
 	if _, blockDownloaded := m.downloadedBlocks[block]; blockDownloaded {
 		return
 	}
+	// mark block as downloaded
 	m.downloadedBlocks[block] = struct{}{}
+	// check if a piece is downloaded
 	pieceDownloaded := true
 	for block = range m.blocksByPiece[block.PieceIndex] {
 		if _, blockDownloaded := m.downloadedBlocks[block]; !blockDownloaded {

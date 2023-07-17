@@ -77,7 +77,8 @@ type PeerManager struct {
 	dm                *download.Manager
 	file              *os.File
 	dms               *download.Managers
-	progressConnReads chan<- *ProgressConnRead
+	progressConnReads chan *ProgressConnRead
+	downloadSpeed     atomic.Int64
 }
 
 func NewPeerManager(
@@ -85,17 +86,17 @@ func NewPeerManager(
 	storage storage.Reader,
 	peer Peer,
 	dms *download.Managers,
-	progressConnReads chan<- *ProgressConnRead,
+	progressConnReads chan<- *ProgressConnRead, // TODO remove
 ) *PeerManager {
 	pm := &PeerManager{
 		clientId:          clientId,
 		storage:           storage,
 		peer:              peer,
 		incomeMessagesCh:  make(chan *Message, 512),
-		outcomeMessageCh:  make(chan *Message, 32),
+		outcomeMessageCh:  make(chan *Message, 512),
 		bitfieldReceived:  make(chan struct{}),
 		dms:               dms,
-		progressConnReads: progressConnReads,
+		progressConnReads: make(chan *ProgressConnRead),
 	}
 	pm.isAlive.Store(true)
 	pm.amChoking.Store(true)
@@ -144,6 +145,23 @@ func (pm *PeerManager) Run(ctx context.Context, wg *sync.WaitGroup) {
 	_ = pm.sendMessage(ctx, NewInterested())
 
 	g, ctx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		bytesRead := 0
+		for {
+			select {
+			case progress, ok := <-pm.progressConnReads:
+				if !ok {
+					return nil
+				}
+				bytesRead += progress.Bytes
+			case <-ticker.C:
+				pm.downloadSpeed.Store(int64(bytesRead))
+				bytesRead = 0
+			}
+		}
+	})
 	g.Go(func() error {
 		return pm.readMessages()
 	})
@@ -241,7 +259,11 @@ func (pm *PeerManager) acceptHandshake() error {
 }
 
 func (pm *PeerManager) readMessages() error {
-	defer close(pm.incomeMessagesCh)
+	defer func() {
+		close(pm.incomeMessagesCh)
+		close(pm.progressConnReads)
+	}()
+
 	_ = pm.peer.Conn.SetReadDeadline(time.Time{})
 	for {
 		bytesRead := 0
@@ -311,28 +333,50 @@ func (pm *PeerManager) download(ctx context.Context) error {
 		return ctx.Err()
 	case <-pm.bitfieldReceived:
 	}
+
+	const minExp = 14 // 64 Kib
+	exp := 18         // 256 KiB
+
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
 	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
 		if pm.amChoking.Load() {
 			time.Sleep(time.Second)
 			continue
 		}
-		task, err := pm.dm.GenerateBlock(ctx)
-		if errors.Is(err, download.ErrNoMoreBlocks) {
-			pm.log.Info().Bool("bitfield_completed", pm.myBitfield.IsCompleted()).Msg("file(s) downloaded")
-			return nil
+
+		speedCap := 1 << exp
+		blocksToRequest := speedCap / download.BlockSize
+		i := 0
+		for {
+			if i >= blocksToRequest {
+				break
+			}
+			block, err := pm.dm.GenerateBlock(ctx)
+			if errors.Is(err, download.ErrNoMoreBlocks) {
+				pm.log.Info().Bool("bitfield_completed", pm.myBitfield.IsCompleted()).Msg("file(s) downloaded")
+				// todo send cancel messages for all non received blocks
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if !pm.myBitfield.Has(block.PieceIndex) && pm.peerBitfield.Has(block.PieceIndex) {
+				// if we don't have a piece but remote peer has, then request it
+				_ = pm.sendMessage(ctx, NewRequest(uint32(block.PieceIndex), uint32(block.Begin), uint32(block.Len)))
+				i++
+			}
 		}
-		if err != nil {
-			return err
+		// wait 1 sec
+		<-ticker.C
+		// adjust exp based on current speed
+		if pm.downloadSpeed.Load() > int64(speedCap) {
+			exp++
+		} else {
+			exp--
 		}
-		// if we don't have a piece but remote peer has, then request it
-		if !pm.myBitfield.Has(task.PieceIndex) && pm.peerBitfield.Has(task.PieceIndex) {
-			_ = pm.sendMessage(ctx, NewRequest(uint32(task.PieceIndex), uint32(task.Begin), uint32(task.Len)))
-			time.Sleep(50 * time.Millisecond)
+		if exp < minExp {
+			exp = minExp
 		}
 	}
 }
