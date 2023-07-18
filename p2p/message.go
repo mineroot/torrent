@@ -56,13 +56,24 @@ func NewBitfield(bf *bitfield.Bitfield) *Message {
 	}
 }
 
-func NewRequest(pieceIndex, begin, length uint32) *Message {
+func NewRequest(pieceIndex, begin, length uint32) *Message { // todo make block as parameter
 	buf := make([]byte, 12)
 	binary.BigEndian.PutUint32(buf[:4], pieceIndex)
 	binary.BigEndian.PutUint32(buf[4:8], begin)
 	binary.BigEndian.PutUint32(buf[8:12], length)
 	return &Message{
 		ID:      msgRequest,
+		Payload: buf,
+	}
+}
+
+func NewCancel(pieceIndex, begin, length uint32) *Message { // todo make block as parameter
+	buf := make([]byte, 12)
+	binary.BigEndian.PutUint32(buf[:4], pieceIndex)
+	binary.BigEndian.PutUint32(buf[4:8], begin)
+	binary.BigEndian.PutUint32(buf[8:12], length)
+	return &Message{
+		ID:      msgCancel,
 		Payload: buf,
 	}
 }

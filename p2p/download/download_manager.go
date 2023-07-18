@@ -34,36 +34,30 @@ func CreateDownloadManagers(storage storage.Reader) *Managers {
 	return managers
 }
 
-type Block struct {
-	PieceIndex int
-	Begin      int
-	Len        int
-}
-
 type Manager struct {
 	bitfield      *bitfield.Bitfield
-	blocksByPiece map[int]map[Block]struct{}
+	blocksByPiece map[int]BlocksMap
 	blocksQ       chan Block
 
 	lock             sync.RWMutex
-	downloadedBlocks map[Block]struct{}
+	downloadedBlocks BlocksMap
 }
 
 func newManager(items <-chan divide.Item, bitfield *bitfield.Bitfield) *Manager {
-	blocksByPiece := make(map[int]map[Block]struct{}, bitfield.PiecesCount())
+	blocksByPiece := make(map[int]BlocksMap, bitfield.PiecesCount())
 	blocksCount := 0
 	for item := range items {
 		if !bitfield.Has(item.ParentIndex) {
 			blocks, ok := blocksByPiece[item.ParentIndex]
 			if !ok {
-				blocks = make(map[Block]struct{})
+				blocks = make(BlocksMap)
 				blocksByPiece[item.ParentIndex] = blocks
 			}
-			blocks[Block{
+			blocks.Add(Block{
 				PieceIndex: item.ParentIndex,
 				Begin:      item.Begin,
 				Len:        item.Len,
-			}] = struct{}{}
+			})
 			blocksCount++
 		}
 	}
@@ -81,7 +75,7 @@ func newManager(items <-chan divide.Item, bitfield *bitfield.Bitfield) *Manager 
 		bitfield:         bitfield,
 		blocksByPiece:    blocksByPiece,
 		blocksQ:          blocksQ,
-		downloadedBlocks: make(map[Block]struct{}),
+		downloadedBlocks: make(BlocksMap),
 	}
 }
 
@@ -96,7 +90,7 @@ func (m *Manager) GenerateBlock(ctx context.Context) (Block, error) {
 			if !ok {
 				return Block{}, ErrNoMoreBlocks
 			}
-			if _, ok := m.downloadedBlocks[block]; !ok { // block isn't downloaded yet
+			if !m.downloadedBlocks.Has(block) { // block isn't downloaded yet
 				// put it back to queue and return it
 				m.blocksQ <- block
 				return block, nil
@@ -118,15 +112,15 @@ func (m *Manager) MarkAsDownloaded(
 	if !m.hasBlock(block) {
 		return
 	}
-	if _, blockDownloaded := m.downloadedBlocks[block]; blockDownloaded {
+	if m.downloadedBlocks.Has(block) {
 		return
 	}
 	// mark block as downloaded
-	m.downloadedBlocks[block] = struct{}{}
+	m.downloadedBlocks.Add(block)
 	// check if a piece is downloaded
 	pieceDownloaded := true
 	for block = range m.blocksByPiece[block.PieceIndex] {
-		if _, blockDownloaded := m.downloadedBlocks[block]; !blockDownloaded {
+		if !m.downloadedBlocks.Has(block) {
 			pieceDownloaded = false
 			break
 		}
@@ -143,7 +137,7 @@ func (m *Manager) MarkAsDownloaded(
 		// if piece's hash doesn't match
 		for block = range m.blocksByPiece[block.PieceIndex] {
 			// delete all piece's blocks from a map and put them back to queue
-			delete(m.downloadedBlocks, block)
+			m.downloadedBlocks.Delete(block)
 			m.blocksQ <- block
 		}
 		return
@@ -152,7 +146,7 @@ func (m *Manager) MarkAsDownloaded(
 	// if a piece has zero block(s), they may not have downloaded yet, but a piece has already been verified
 	// in this case mark all remaining piece's blocks as downloaded
 	for block = range m.blocksByPiece[block.PieceIndex] {
-		m.downloadedBlocks[block] = struct{}{}
+		m.downloadedBlocks.Add(block)
 	}
 
 	m.bitfield.Set(block.PieceIndex)
@@ -167,6 +161,5 @@ func (m *Manager) hasBlock(block Block) bool {
 	if !ok {
 		return false
 	}
-	_, ok = blocks[block]
-	return ok
+	return blocks.Has(block)
 }

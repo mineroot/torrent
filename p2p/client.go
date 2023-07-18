@@ -67,7 +67,7 @@ func (c *Client) Run(ctx context.Context) error {
 	c.dms = download.CreateDownloadManagers(c.storage)
 	c.trackerRequests(ctx, torrent.Started)
 
-	var wg sync.WaitGroup
+	var wg sync.WaitGroup // todo use err group
 	wg.Add(2)
 	go c.managePeers(ctx, &wg)
 	go c.trackerRegularRequests(ctx, &wg)
@@ -96,6 +96,7 @@ func (c *Client) trackerRegularRequests(ctx context.Context, wg *sync.WaitGroup)
 			for {
 				select {
 				case <-ticker.C:
+					wg.Add(1)
 					c.trackerRequest(ctx, t, torrent.Regular, wg)
 				case <-ctx.Done():
 					return
@@ -200,7 +201,6 @@ func (c *Client) trackerRequest(ctx context.Context, t *torrent.File, event torr
 	}
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
-		// TODO PANIC?
 		l.Error().
 			Err(fmt.Errorf("unable to read from body tracker url%w", err)).
 			Send()

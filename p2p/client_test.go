@@ -3,6 +3,7 @@ package p2p
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
@@ -100,4 +101,16 @@ type body struct {
 
 func (b *body) Close() error {
 	return nil
+}
+
+func TestAAA(t *testing.T) {
+	growFunc := func(x int) int {
+		if x < 5 {
+			return x * x
+		}
+		return 5 * x
+	}
+	for x := 0; x < 100; x++ {
+		fmt.Printf("x = %d, y = %d\n", x, growFunc(x))
+	}
 }
