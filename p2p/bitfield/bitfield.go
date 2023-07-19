@@ -46,7 +46,7 @@ func FromPayload(payload []byte, piecesCount int) (*Bitfield, error) {
 	if piecesCount%bits != 0 {
 		spareBitsCount := bits - piecesCount%bits
 		lastByte := b[len(b)-1]
-		if lastByte^byte((1<<spareBitsCount)-1) != 0xFF {
+		if lastByte&byte((1<<spareBitsCount)-1) != 0 {
 			return nil, ErrMalformedBitfield
 		}
 	}

@@ -28,13 +28,20 @@ func main() {
 	defer logFile.Close()
 
 	l := log.Output(zerolog.ConsoleWriter{Out: logFile}).With().Caller().Logger().Level(zerolog.InfoLevel)
-	t, err := torrent.Open("testdata/debian-12.0.0-amd64-netinst.iso.torrent", "")
-	//t, err := torrent.Open("/home/mineroot/Desktop/debian-11.5.0-amd64-netinst.iso.torrent", "")
+	t1, err := torrent.Open("testdata/debian-12.0.0-amd64-netinst.iso.torrent", "")
+	if err != nil {
+		l.Fatal().Err(err).Send()
+	}
+	t2, err := torrent.Open("/home/mineroot/Desktop/debian-11.5.0-amd64-netinst.iso.torrent", "")
 	if err != nil {
 		l.Fatal().Err(err).Send()
 	}
 	s := storage.NewStorage()
-	err = s.Set(t.InfoHash, t)
+	err = s.Set(t1.InfoHash, t1)
+	if err != nil {
+		l.Fatal().Err(err).Send()
+	}
+	err = s.Set(t2.InfoHash, t2)
 	if err != nil {
 		l.Fatal().Err(err).Send()
 	}

@@ -23,6 +23,9 @@ func (bitfieldConcurrentCalculator) Calculate(r io.ReaderAt, hashes []torrent.Ha
 		g.Go(func() error {
 			for j := 0; j < bits; j++ {
 				pieceIndex := i*bits + j
+				if pieceIndex >= len(hashes) {
+					return nil
+				}
 				ok, err := torrent.VerifyPiece(r, hashes[pieceIndex], pieceIndex, pieceLen)
 				if err != nil {
 					return err

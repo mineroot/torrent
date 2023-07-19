@@ -26,6 +26,9 @@ const (
 	pstr         = "BitTorrent protocol"
 )
 
+// for overriding in tests
+var initialGrowFactor = 4
+
 type PeerManagers []*PeerManager
 
 func (pms PeerManagers) FindByInfoHashAndIp(infoHash torrent.Hash, ip net.IP) PeerManagers {
@@ -319,7 +322,7 @@ func (pm *PeerManager) download(ctx context.Context) error {
 	}
 
 	const minGrowFactor = 1
-	growFactor := 4
+	growFactor := initialGrowFactor
 	growFunc := func(x int) int {
 		if x < 5 {
 			return x * x
@@ -341,6 +344,7 @@ func (pm *PeerManager) download(ctx context.Context) error {
 		}
 
 		blocksToRequest := growFunc(growFactor)
+		pm.log.Debug().Int("blocks_to_request", blocksToRequest).Send()
 		i := 0
 		for {
 			if i >= blocksToRequest {
@@ -348,7 +352,7 @@ func (pm *PeerManager) download(ctx context.Context) error {
 			}
 			block, err := pm.dm.GenerateBlock(ctx)
 			if errors.Is(err, download.ErrNoMoreBlocks) {
-				pm.log.Info().Int("requested_messages", pm.requestedBlocks.Len()).Msg("download completed")
+				pm.log.Info().Int("requested_messages_left", pm.requestedBlocks.Len()).Msg("download completed")
 				for block := range pm.requestedBlocks.Iterate() {
 					message := NewCancel(uint32(block.PieceIndex), uint32(block.Begin), uint32(block.Len))
 					_ = pm.sendMessage(ctx, message)

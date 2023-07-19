@@ -16,5 +16,5 @@ func FormatBytes[T uint | uint8 | uint16 | uint32 | uint64](bytes T) string {
 		div *= unit
 		exp++
 	}
-	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+	return fmt.Sprintf("%.1f %ciB", float64(b)/float64(div), "KMGTPE"[exp])
 }

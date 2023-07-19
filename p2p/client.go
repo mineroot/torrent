@@ -47,7 +47,7 @@ func NewClient(id PeerID, port uint16, storage *storage.Storage, announcer Annou
 		port:              port,
 		announcer:         announcer,
 		storage:           storage,
-		peersCh:           make(chan Peers, 1),
+		peersCh:           make(chan Peers, storage.Len()),
 		pms:               make(PeerManagers, 0, 512),
 		intervals:         make(map[torrent.Hash]time.Duration),
 		progressConnReads: make(chan *ProgressConnRead, 512),
@@ -202,7 +202,7 @@ func (c *Client) trackerRequest(ctx context.Context, t *torrent.File, event torr
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
 		l.Error().
-			Err(fmt.Errorf("unable to read from body tracker url%w", err)).
+			Err(fmt.Errorf("unable to read from body tracker url: %w", err)).
 			Send()
 		return
 	}
