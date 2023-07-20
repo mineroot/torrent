@@ -3,11 +3,12 @@ package tracker
 import (
 	"encoding/binary"
 	"fmt"
+	bencode2 "github.com/mineroot/torrent/pkg/bencode"
 	"net"
 	"time"
-	"torrent/bencode"
-	"torrent/p2p/peer"
-	"torrent/p2p/torrent"
+
+	"github.com/mineroot/torrent/pkg/peer"
+	"github.com/mineroot/torrent/pkg/torrent"
 )
 
 type response struct {
@@ -26,35 +27,35 @@ func newTrackerResponse(infoHash torrent.Hash) *response {
 	}
 }
 
-func (r *response) unmarshal(benType bencode.BenType) error {
+func (r *response) unmarshal(benType bencode2.BenType) error {
 	if r == nil {
 		panic("response must be not nil")
 	}
-	dict, ok := benType.(*bencode.Dictionary)
+	dict, ok := benType.(*bencode2.Dictionary)
 	if !ok {
 		return fmt.Errorf("response must be a dictionary")
 	}
-	failure, ok := dict.Get("failure").(*bencode.String)
+	failure, ok := dict.Get("failure").(*bencode2.String)
 	if ok {
 		r.failure = failure.Value()
 		return fmt.Errorf("failure: %s", r.failure)
 	}
-	warning, ok := dict.Get("warning").(*bencode.String)
+	warning, ok := dict.Get("warning").(*bencode2.String)
 	if ok {
 		r.warning = warning.Value()
 	}
-	interval, ok := dict.Get("interval").(*bencode.Integer)
+	interval, ok := dict.Get("interval").(*bencode2.Integer)
 	if ok {
 		r.interval = time.Second * time.Duration(interval.Value())
 	} else {
 		r.interval = 900 * time.Second
 	}
-	minInterval, ok := dict.Get("minInterval").(*bencode.Integer)
+	minInterval, ok := dict.Get("minInterval").(*bencode2.Integer)
 	if ok {
 		r.minInterval = time.Second * time.Duration(minInterval.Value())
 	}
 
-	peers, ok := dict.Get("peers").(*bencode.String)
+	peers, ok := dict.Get("peers").(*bencode2.String)
 	if !ok {
 		return fmt.Errorf("peers must be bytes")
 	}

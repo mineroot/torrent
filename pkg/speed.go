@@ -1,9 +1,11 @@
-package p2p
+package pkg
 
 import (
 	"context"
 	"time"
-	"torrent/p2p/torrent"
+
+	"github.com/mineroot/torrent/pkg/event"
+	"github.com/mineroot/torrent/pkg/torrent"
 )
 
 const twentySeconds = 20
@@ -31,7 +33,7 @@ func (c *Client) calculateDownloadSpeed(ctx context.Context) {
 
 				avgSpeed := calculateAverageSpeed(bytesForTwentySeconds)
 				select {
-				case c.progressSpeed <- NewProgressSpeed(hash, avgSpeed):
+				case c.progressSpeed <- event.NewProgressSpeed(hash, avgSpeed):
 				default:
 				}
 				bytesByHash[hash] = 0

@@ -7,16 +7,17 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"torrent/p2p"
-	"torrent/p2p/storage"
-	"torrent/p2p/torrent"
-	"torrent/utils"
+
+	"github.com/mineroot/torrent/pkg/event"
+	"github.com/mineroot/torrent/pkg/storage"
+	"github.com/mineroot/torrent/pkg/torrent"
+	"github.com/mineroot/torrent/utils"
 )
 
 func CreateApp(
 	s storage.Reader,
-	progressSpeedCh <-chan *p2p.ProgressSpeed,
-	progressPieces <-chan *p2p.ProgressPieceDownloaded,
+	progressSpeedCh <-chan *event.ProgressSpeed,
+	progressPieces <-chan *event.ProgressPieceDownloaded,
 ) *tview.Application {
 	app := tview.NewApplication()
 	table := tview.NewTable().

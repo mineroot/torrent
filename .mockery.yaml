@@ -1,5 +1,0 @@
-with-expecter: True
-packages:
-  torrent/p2p:
-    interfaces:
-      Announcer:

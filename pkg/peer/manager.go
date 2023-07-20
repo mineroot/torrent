@@ -1,4 +1,4 @@
-package p2p
+package peer
 
 import (
 	"context"
@@ -9,17 +9,17 @@ import (
 	"github.com/rs/zerolog/log"
 	"golang.org/x/sync/errgroup"
 	"io"
-	"net"
 	"os"
 	"sync"
 	"sync/atomic"
 	"time"
-	"torrent/p2p/bitfield"
-	"torrent/p2p/download"
-	"torrent/p2p/peer"
-	"torrent/p2p/storage"
-	"torrent/p2p/torrent"
-	"torrent/utils"
+
+	"github.com/mineroot/torrent/pkg/bitfield"
+	"github.com/mineroot/torrent/pkg/download"
+	"github.com/mineroot/torrent/pkg/event"
+	"github.com/mineroot/torrent/pkg/storage"
+	"github.com/mineroot/torrent/pkg/torrent"
+	"github.com/mineroot/torrent/utils"
 )
 
 const (
@@ -30,42 +30,10 @@ const (
 // for overriding in tests
 var initialGrowFactor = 4
 
-type PeerManagers []*PeerManager
-
-func (pms PeerManagers) FindByInfoHashAndIp(infoHash torrent.Hash, ip net.IP) PeerManagers {
-	foundPms := make(PeerManagers, 0, 10)
-	for _, pm := range pms {
-		if pm.peer.InfoHash == infoHash && pm.peer.IP.Equal(ip) {
-			foundPms = append(foundPms, pm)
-		}
-	}
-	return foundPms
-}
-
-func (pms PeerManagers) FindByInfoHash(infoHash torrent.Hash) PeerManagers {
-	foundPms := make(PeerManagers, 0, 100)
-	for _, pm := range pms {
-		if pm.peer.InfoHash == infoHash {
-			foundPms = append(foundPms, pm)
-		}
-	}
-	return foundPms
-}
-
-func (pms PeerManagers) FindAlive() PeerManagers {
-	alivePms := make([]*PeerManager, 0, len(pms))
-	for _, pm := range pms {
-		if pm.IsAlive() {
-			alivePms = append(alivePms, pm)
-		}
-	}
-	return alivePms
-}
-
-type PeerManager struct {
-	clientId          peer.ID
+type Manager struct {
+	clientId          ID
 	storage           storage.Reader
-	peer              peer.Peer
+	peer              Peer
 	isAlive           atomic.Bool
 	incomeMessagesCh  chan *Message
 	outcomeMessageCh  chan *Message
@@ -81,20 +49,20 @@ type PeerManager struct {
 	dm                *download.Manager
 	file              *os.File
 	dms               *download.Managers
-	progressConnReads chan<- *ProgressConnRead
-	progressPieces    chan<- *ProgressPieceDownloaded
+	progressConnReads chan<- *event.ProgressConnRead
+	progressPieces    chan<- *event.ProgressPieceDownloaded
 	requestedBlocks   *download.BlocksSyncMap
 }
 
-func NewPeerManager(
-	clientId peer.ID,
+func NewManager(
+	clientId ID,
 	storage storage.Reader,
-	peer peer.Peer,
+	peer Peer,
 	dms *download.Managers,
-	progressConnReads chan<- *ProgressConnRead,
-	progressPieces chan<- *ProgressPieceDownloaded,
-) *PeerManager {
-	pm := &PeerManager{
+	progressConnReads chan<- *event.ProgressConnRead,
+	progressPieces chan<- *event.ProgressPieceDownloaded,
+) *Manager {
+	pm := &Manager{
 		clientId:          clientId,
 		storage:           storage,
 		peer:              peer,
@@ -112,11 +80,11 @@ func NewPeerManager(
 	return pm
 }
 
-func (pm *PeerManager) GetHash() torrent.Hash {
+func (pm *Manager) GetHash() torrent.Hash {
 	return pm.peer.InfoHash
 }
 
-func (pm *PeerManager) Run(ctx context.Context, wg *sync.WaitGroup) {
+func (pm *Manager) Run(ctx context.Context, wg *sync.WaitGroup) {
 	defer func() {
 		wg.Done()
 		pm.isAlive.Store(false)
@@ -129,12 +97,13 @@ func (pm *PeerManager) Run(ctx context.Context, wg *sync.WaitGroup) {
 	var err error
 	if pm.peer.Conn == nil {
 		// we initiate connection and send a handshake first
-		if err = pm.sendHandshake(ctx); err != nil {
+		if err = pm.peer.sendHandshake(pm.clientId); err != nil {
 			err = fmt.Errorf("unable to send handshake too remote peer: %w", err)
 		}
+		pm.torrent = pm.storage.Get(pm.peer.InfoHash)
 	} else {
 		// remote peer connected to us, and we are waiting for a handshake
-		if err = pm.acceptHandshake(); err != nil {
+		if pm.torrent, err = pm.peer.acceptHandshake(pm.clientId, pm.storage); err != nil {
 			err = fmt.Errorf("unable to accept handshake from remote peer: %w", err)
 		}
 	}
@@ -144,7 +113,6 @@ func (pm *PeerManager) Run(ctx context.Context, wg *sync.WaitGroup) {
 	}
 	pm.log.Info().Msg("successful handshake")
 
-	pm.torrent = pm.storage.Get(pm.peer.InfoHash)
 	pm.file = pm.storage.GetFile(pm.peer.InfoHash)
 	pm.dm = pm.dms.Load(pm)
 	pm.myBitfield = pm.storage.GetBitfield(pm.peer.InfoHash)
@@ -177,11 +145,11 @@ func (pm *PeerManager) Run(ctx context.Context, wg *sync.WaitGroup) {
 	}
 }
 
-func (pm *PeerManager) IsAlive() bool {
+func (pm *Manager) IsAlive() bool {
 	return pm.isAlive.Load()
 }
 
-func (pm *PeerManager) kill(ctx context.Context) error {
+func (pm *Manager) kill(ctx context.Context) error {
 	<-ctx.Done()
 	pm.isAlive.Store(false)
 	if pm.peer.Conn != nil {
@@ -190,69 +158,7 @@ func (pm *PeerManager) kill(ctx context.Context) error {
 	return nil
 }
 
-func (pm *PeerManager) sendHandshake(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	myHs := newHandshake(pm.peer.InfoHash, pm.clientId)
-	dialer := &net.Dialer{
-		KeepAlive: 30 * time.Second,
-	}
-	conn, err := dialer.DialContext(ctx, "tcp", pm.peer.Address())
-	if err != nil {
-		return fmt.Errorf("unable to establish conn: %w", err)
-	}
-	defer conn.SetDeadline(time.Time{})
-	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	_, err = conn.Write(myHs.encode())
-	if err != nil {
-		conn.Close()
-		return fmt.Errorf("unable to write handshake: %w", err)
-	}
-	buf := make([]byte, handshakeLen)
-	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	_, err = io.ReadFull(conn, buf)
-	if err != nil {
-		conn.Close()
-		return fmt.Errorf("unable to read handshake: %w", err)
-	}
-
-	peerHs := newHandshake(pm.peer.InfoHash, peer.ID{})
-	err = peerHs.decode(buf)
-	if err != nil {
-		conn.Close()
-		return fmt.Errorf("unable to decode handshake: %w", err)
-	}
-	pm.peer.Conn = conn
-	return nil
-}
-
-func (pm *PeerManager) acceptHandshake() error {
-	_ = pm.peer.Conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	defer pm.peer.Conn.SetReadDeadline(time.Time{})
-	buf := make([]byte, handshakeLen)
-	_, err := io.ReadFull(pm.peer.Conn, buf)
-	if err != nil {
-		return fmt.Errorf("unable to read handshake: %w", err)
-	}
-	peerHs := newHandshake(pm.peer.InfoHash, peer.ID{})
-	err = peerHs.decode(buf)
-	if err != nil {
-		return fmt.Errorf("unable to decode handshake: %w", err)
-	}
-	pm.peer.InfoHash = peerHs.infoHash
-	t := pm.storage.Get(pm.peer.InfoHash)
-	if t == nil {
-		return fmt.Errorf("torrent with info hash %s not found", pm.peer.InfoHash)
-	}
-	pm.torrent = t
-	myHs := newHandshake(pm.peer.InfoHash, pm.clientId)
-	_ = pm.peer.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	defer pm.peer.Conn.SetWriteDeadline(time.Time{})
-	_, err = pm.peer.Conn.Write(myHs.encode())
-	return err
-}
-
-func (pm *PeerManager) readMessages() error {
+func (pm *Manager) readMessages() error {
 	defer close(pm.incomeMessagesCh)
 	_ = pm.peer.Conn.SetReadDeadline(time.Time{})
 	for {
@@ -265,7 +171,7 @@ func (pm *PeerManager) readMessages() error {
 		bytesRead += n
 		msgLen := binary.BigEndian.Uint32(bufLen)
 		if msgLen == 0 { //keep-alive message
-			pm.progressConnReads <- NewProgressConnRead(pm.GetHash(), bytesRead)
+			pm.progressConnReads <- event.NewProgressConnRead(pm.GetHash(), bytesRead)
 			continue
 		}
 		msgBuf := make([]byte, msgLen)
@@ -274,7 +180,7 @@ func (pm *PeerManager) readMessages() error {
 			return err
 		}
 		bytesRead += n
-		pm.progressConnReads <- NewProgressConnRead(pm.GetHash(), bytesRead)
+		pm.progressConnReads <- event.NewProgressConnRead(pm.GetHash(), bytesRead)
 		pm.incomeMessagesCh <- &Message{
 			ID:      messageId(msgBuf[0]),
 			Payload: msgBuf[1:],
@@ -282,7 +188,7 @@ func (pm *PeerManager) readMessages() error {
 	}
 }
 
-func (pm *PeerManager) sendMessage(ctx context.Context, message *Message) error {
+func (pm *Manager) sendMessage(ctx context.Context, message *Message) error {
 	// allow to send msgUnChoke and msgBitfield and msgInterested even if amChoking
 	if pm.amChoking.Load() && !(message.ID == msgBitfield || message.ID == msgUnChoke || message.ID == msgInterested) {
 		return fmt.Errorf("i am choking")
@@ -298,7 +204,7 @@ func (pm *PeerManager) sendMessage(ctx context.Context, message *Message) error 
 	}
 }
 
-func (pm *PeerManager) writeMessages(ctx context.Context) error {
+func (pm *Manager) writeMessages(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -316,7 +222,7 @@ func (pm *PeerManager) writeMessages(ctx context.Context) error {
 	}
 }
 
-func (pm *PeerManager) download(ctx context.Context) error {
+func (pm *Manager) download(ctx context.Context) error {
 	// wait for bitfield
 	select {
 	case <-ctx.Done():
@@ -393,7 +299,7 @@ func (pm *PeerManager) download(ctx context.Context) error {
 	}
 }
 
-func (pm *PeerManager) handleMessages(ctx context.Context) error {
+func (pm *Manager) handleMessages(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -438,7 +344,7 @@ func (pm *PeerManager) handleMessages(ctx context.Context) error {
 				_ = pm.sendMessage(ctx, NewPiece(index, begin, buf))
 			case msgPiece:
 				index := int(binary.BigEndian.Uint32(message.Payload[:4]))
-				// discard the piece if we already have it
+				// discard block if we already have its piece
 				if pm.myBitfield.Has(index) {
 					pm.log.Warn().Int("piece", index).Msg("block discarded")
 					break
@@ -463,7 +369,7 @@ func (pm *PeerManager) handleMessages(ctx context.Context) error {
 				// delete block from requested after receiving it
 				pm.requestedBlocks.Delete(block)
 				if isVerified {
-					pm.progressPieces <- NewProgressPieceDownloaded(pm.torrent.InfoHash, pm.myBitfield.DownloadedPiecesCount())
+					pm.progressPieces <- event.NewProgressPieceDownloaded(pm.torrent.InfoHash, pm.myBitfield.DownloadedPiecesCount())
 				}
 				pm.log.Debug().Int("piece", index).Str("len", utils.FormatBytes(uint(len(data)))).Msg("block downloaded")
 			case msgCancel:
@@ -475,7 +381,7 @@ func (pm *PeerManager) handleMessages(ctx context.Context) error {
 	}
 }
 
-func (pm *PeerManager) setLoggerFromCtx(ctx context.Context) {
+func (pm *Manager) setLoggerFromCtx(ctx context.Context) {
 	pm.log = log.Ctx(ctx).With().Str("peer_id", string(pm.clientId[:])).Str("remote_peer", pm.peer.Address()).Logger().
 		Hook(zerolog.HookFunc(func(e *zerolog.Event, _ zerolog.Level, _ string) {
 			if !pm.peer.InfoHash.IsZero() {

@@ -1,4 +1,4 @@
-package p2p
+package pkg
 
 import (
 	"context"
@@ -8,12 +8,14 @@ import (
 	"net"
 	"sync"
 	"time"
-	"torrent/p2p/download"
-	"torrent/p2p/listener"
-	"torrent/p2p/peer"
-	"torrent/p2p/storage"
-	"torrent/p2p/torrent"
-	"torrent/p2p/tracker"
+
+	"github.com/mineroot/torrent/pkg/download"
+	"github.com/mineroot/torrent/pkg/event"
+	"github.com/mineroot/torrent/pkg/listener"
+	"github.com/mineroot/torrent/pkg/peer"
+	"github.com/mineroot/torrent/pkg/storage"
+	"github.com/mineroot/torrent/pkg/torrent"
+	"github.com/mineroot/torrent/pkg/tracker"
 )
 
 type Client struct {
@@ -22,12 +24,12 @@ type Client struct {
 	storage           *storage.Storage
 	peersCh           chan peer.Peers
 	pmsLock           sync.RWMutex
-	pms               PeerManagers
+	pms               peer.Managers
 	connCh            <-chan net.Conn
 	dms               *download.Managers
-	progressConnReads chan *ProgressConnRead
-	progressSpeed     chan *ProgressSpeed
-	progressPieces    chan *ProgressPieceDownloaded
+	progressConnReads chan *event.ProgressConnRead
+	progressSpeed     chan *event.ProgressSpeed
+	progressPieces    chan *event.ProgressPieceDownloaded
 }
 
 func NewClient(id peer.ID, port uint16, storage *storage.Storage) *Client {
@@ -36,10 +38,10 @@ func NewClient(id peer.ID, port uint16, storage *storage.Storage) *Client {
 		port:              port,
 		storage:           storage,
 		peersCh:           make(chan peer.Peers, storage.Len()),
-		pms:               make(PeerManagers, 0, 512),
-		progressConnReads: make(chan *ProgressConnRead, 512),
-		progressPieces:    make(chan *ProgressPieceDownloaded, 512),
-		progressSpeed:     make(chan *ProgressSpeed),
+		pms:               make(peer.Managers, 0, 512),
+		progressConnReads: make(chan *event.ProgressConnRead, 512),
+		progressPieces:    make(chan *event.ProgressPieceDownloaded, 512),
+		progressSpeed:     make(chan *event.ProgressSpeed),
 	}
 }
 
@@ -69,18 +71,18 @@ func (c *Client) Run(ctx context.Context) (err error) {
 	return g.Wait()
 }
 
-func (c *Client) ProgressSpeed() <-chan *ProgressSpeed {
+func (c *Client) ProgressSpeed() <-chan *event.ProgressSpeed {
 	return c.progressSpeed
 }
 
-func (c *Client) ProgressPieces() <-chan *ProgressPieceDownloaded {
+func (c *Client) ProgressPieces() <-chan *event.ProgressPieceDownloaded {
 	return c.progressPieces
 }
 
 func (c *Client) sendInitialProgress() {
 	for t := range c.storage.Iterator() {
 		downloaded := c.storage.GetBitfield(t.InfoHash).DownloadedPiecesCount()
-		c.progressPieces <- NewProgressPieceDownloaded(t.InfoHash, downloaded)
+		c.progressPieces <- event.NewProgressPieceDownloaded(t.InfoHash, downloaded)
 	}
 }
 
@@ -104,7 +106,7 @@ func (c *Client) managePeers(ctx context.Context) error {
 				Port:     uint16(addr.Port),
 				Conn:     conn,
 			}
-			pm := NewPeerManager(c.id, c.storage, p, c.dms, c.progressConnReads, c.progressPieces)
+			pm := peer.NewManager(c.id, c.storage, p, c.dms, c.progressConnReads, c.progressPieces)
 			c.pmsLock.Lock()
 			c.pms = append(c.pms, pm)
 			c.pmsLock.Unlock()
@@ -118,7 +120,7 @@ func (c *Client) managePeers(ctx context.Context) error {
 			for _, p := range peers {
 				foundPms := c.pms.FindByInfoHashAndIp(p.InfoHash, p.IP)
 				if len(foundPms) == 0 {
-					pm := NewPeerManager(c.id, c.storage, p, c.dms, c.progressConnReads, c.progressPieces)
+					pm := peer.NewManager(c.id, c.storage, p, c.dms, c.progressConnReads, c.progressPieces)
 					c.pms = append(c.pms, pm)
 					wg.Add(1)
 					go pm.Run(ctx, wg)

@@ -4,14 +4,15 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/mineroot/torrent/pkg/bencode"
 	"io"
 	"net/http"
 	"net/url"
 	"strconv"
 	"time"
-	"torrent/bencode"
-	"torrent/p2p/peer"
-	"torrent/p2p/torrent"
+
+	"github.com/mineroot/torrent/pkg/peer"
+	"github.com/mineroot/torrent/pkg/torrent"
 )
 
 type Tracker struct {

@@ -1,4 +1,4 @@
-package p2p
+package pkg
 
 //
 //func TestClient_Run(t *testing.T) {
@@ -45,7 +45,7 @@ package p2p
 //	err := bencode.Encode(buf, []bencode.BenType{response})
 //	require.NoError(t, err)
 //
-//	announcer := p2p.NewMockAnnouncer(t)
+//	announcer := pkg.NewMockAnnouncer(t)
 //	readCloser := &body{Buffer: buf}
 //	announcer.EXPECT().Do(mock.Anything).Return(&http.Response{Body: readCloser}, nil)
 //	torrentFile, err := torrent.Open("../testdata/cat.png.torrent", "../testdata/downloads/local")
@@ -68,7 +68,7 @@ package p2p
 //	err := bencode.Encode(buf, []bencode.BenType{response})
 //	require.NoError(t, err)
 //
-//	announcer := p2p.NewMockAnnouncer(t)
+//	announcer := pkg.NewMockAnnouncer(t)
 //	readCloser := &body{Buffer: buf}
 //	announcer.EXPECT().Do(mock.Anything).Return(&http.Response{Body: readCloser}, nil)
 //	torrentFile, err := torrent.Open("../testdata/cat.png.torrent", "../testdata/downloads/remote")

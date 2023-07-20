@@ -9,11 +9,12 @@ import (
 	"github.com/rs/zerolog/log"
 	"os"
 	"sync"
-	"torrent/p2p"
-	"torrent/p2p/peer"
-	"torrent/p2p/storage"
-	"torrent/p2p/torrent"
-	"torrent/ui"
+
+	"github.com/mineroot/torrent/pkg"
+	"github.com/mineroot/torrent/pkg/peer"
+	"github.com/mineroot/torrent/pkg/storage"
+	"github.com/mineroot/torrent/pkg/torrent"
+	"github.com/mineroot/torrent/ui"
 )
 
 const listenPort uint16 = 6881
@@ -47,7 +48,7 @@ func main() {
 		l.Fatal().Err(err).Send()
 	}
 
-	client := p2p.NewClient(peer.ID([]byte("-GO0001-random_bytes")), listenPort, s)
+	client := pkg.NewClient(peer.ID([]byte("-GO0001-random_bytes")), listenPort, s)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -1,26 +1,25 @@
-package p2p
+package peer
 
 import (
 	"bytes"
 	"fmt"
 	"io"
-	"torrent/p2p/peer"
-	"torrent/p2p/torrent"
+
+	"github.com/mineroot/torrent/pkg/torrent"
 )
 
 type handshake struct {
 	infoHash torrent.Hash
-	peerID   peer.ID
+	peerID   ID
 }
 
-func newHandshake(infoHash torrent.Hash, peerId peer.ID) *handshake {
+func newHandshake(infoHash torrent.Hash, peerId ID) *handshake {
 	return &handshake{
 		infoHash: infoHash,
 		peerID:   peerId,
 	}
 }
 
-// encode <pstrlen><pstr><reserved><info_hash><peer_id>
 func (h *handshake) encode() []byte {
 	buf := make([]byte, handshakeLen)
 	buf[0] = byte(len(pstr))
@@ -60,11 +59,11 @@ func (h *handshake) decode(raw []byte) error {
 		h.infoHash = (torrent.Hash)(buf)
 	}
 	// read peer_id
-	buf = make([]byte, peer.IdSize)
+	buf = make([]byte, IdSize)
 	if _, err := io.ReadFull(r, buf); err != nil {
 		return fmt.Errorf("invalid handshake: unable to read peer_id")
 	}
-	h.peerID = peer.ID(buf)
+	h.peerID = ID(buf)
 
 	return nil
 }

@@ -1,8 +1,9 @@
-package p2p
+package peer
 
 import (
 	"encoding/binary"
-	"torrent/p2p/bitfield"
+
+	"github.com/mineroot/torrent/pkg/bitfield"
 )
 
 type messageId int

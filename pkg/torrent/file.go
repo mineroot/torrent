@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"crypto/sha1"
 	"fmt"
+	bencode2 "github.com/mineroot/torrent/pkg/bencode"
 	"os"
-	"torrent/bencode"
 )
 
 type File struct {
@@ -30,7 +30,7 @@ func Open(torrentFileName, downloadDir string) (*File, error) {
 		TorrentFileName: file.Name(),
 		DownloadDir:     downloadDir,
 	}
-	benType, err := bencode.Decode(file)
+	benType, err := bencode2.Decode(file)
 	if err != nil {
 		return nil, err
 	}
@@ -44,21 +44,21 @@ func (t *File) PiecesCount() int {
 	return len(t.PieceHashes)
 }
 
-func (t *File) unmarshal(benType bencode.BenType) error {
+func (t *File) unmarshal(benType bencode2.BenType) error {
 	if t == nil {
 		panic("torrent must be not nil")
 	}
-	dict, ok := benType.(*bencode.Dictionary)
+	dict, ok := benType.(*bencode2.Dictionary)
 	if !ok {
 		return fmt.Errorf("torrent must be a dictionary")
 	}
 
-	announce, ok := dict.Get("announce").(*bencode.String)
+	announce, ok := dict.Get("announce").(*bencode2.String)
 	if !ok {
 		return fmt.Errorf("announce must be a string")
 	}
 
-	infoDict, ok := dict.Get("info").(*bencode.Dictionary)
+	infoDict, ok := dict.Get("info").(*bencode2.Dictionary)
 	if !ok {
 		return fmt.Errorf("info must be a dictionary")
 	}
@@ -69,24 +69,24 @@ func (t *File) unmarshal(benType bencode.BenType) error {
 	}
 	infoHash := sha1.Sum(infoEncoded.Bytes())
 
-	name, ok := infoDict.Get("name").(*bencode.String)
+	name, ok := infoDict.Get("name").(*bencode2.String)
 	if !ok {
 		return fmt.Errorf("name must be a string")
 	}
 
-	length, ok := infoDict.Get("length").(*bencode.Integer)
+	length, ok := infoDict.Get("length").(*bencode2.Integer)
 	if !ok {
 		return fmt.Errorf("length must be an integer")
 	}
 	lengthInt := int(length.Value())
 
-	pieceLength, ok := infoDict.Get("piece length").(*bencode.Integer)
+	pieceLength, ok := infoDict.Get("piece length").(*bencode2.Integer)
 	if !ok {
 		return fmt.Errorf("piece length must be an integer")
 	}
 	pieceLengthInt := int(pieceLength.Value())
 
-	pieces, ok := infoDict.Get("pieces").(*bencode.String)
+	pieces, ok := infoDict.Get("pieces").(*bencode2.String)
 	if !ok {
 		return fmt.Errorf("pieces must be bytes")
 	}

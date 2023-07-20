@@ -6,8 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"torrent/p2p/bitfield"
-	"torrent/p2p/torrent"
+
+	"github.com/mineroot/torrent/pkg/bitfield"
+	"github.com/mineroot/torrent/pkg/torrent"
 )
 
 type Reader interface {

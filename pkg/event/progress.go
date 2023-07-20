@@ -1,6 +1,6 @@
-package p2p
+package event
 
-import "torrent/p2p/torrent"
+import "github.com/mineroot/torrent/pkg/torrent"
 
 type ProgressPieceDownloaded struct {
 	Hash            torrent.Hash

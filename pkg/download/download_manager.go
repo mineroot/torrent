@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"io"
 	"sync"
-	"torrent/p2p/bitfield"
-	"torrent/p2p/divide"
-	"torrent/p2p/storage"
-	"torrent/p2p/torrent"
+
+	"github.com/mineroot/torrent/pkg/bitfield"
+	"github.com/mineroot/torrent/pkg/divide"
+	"github.com/mineroot/torrent/pkg/storage"
+	"github.com/mineroot/torrent/pkg/torrent"
 )
 
 const BlockSize = 1 << 14 // 16kB

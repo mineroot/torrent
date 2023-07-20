@@ -3,8 +3,9 @@ package storage
 import (
 	"golang.org/x/sync/errgroup"
 	"io"
-	"torrent/p2p/bitfield"
-	"torrent/p2p/torrent"
+
+	"github.com/mineroot/torrent/pkg/bitfield"
+	"github.com/mineroot/torrent/pkg/torrent"
 )
 
 type BitfieldCalculator interface {
