@@ -68,7 +68,19 @@ func (bf *Bitfield) PiecesCount() int {
 	return bf.piecesCount
 }
 
+func (bf *Bitfield) DownloadedPiecesCount() int {
+	bf.lock.RLock()
+	defer bf.lock.RUnlock()
+	downloadedTotal := 0
+	for _, b := range bf.bitfield {
+		downloadedTotal += bf.countSetBits(b)
+	}
+	return downloadedTotal
+}
+
 func (bf *Bitfield) Bitfield() []byte {
+	bf.lock.RLock()
+	defer bf.lock.RUnlock()
 	buf := make([]byte, len(bf.bitfield))
 	copy(buf, bf.bitfield)
 	return buf
@@ -116,4 +128,13 @@ func (bf *Bitfield) initCompletedBitfield() {
 		}
 		bf.completedBitfield[i] = val
 	}
+}
+
+func (*Bitfield) countSetBits(b byte) int {
+	count := 0
+	for b != 0 {
+		count += int(b & 1)
+		b >>= 1
+	}
+	return count
 }

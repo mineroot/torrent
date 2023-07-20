@@ -39,6 +39,7 @@ type Client struct {
 	dms               *download.Managers
 	progressConnReads chan *ProgressConnRead
 	progressSpeed     chan *ProgressSpeed
+	progressPieces    chan *ProgressPieceDownloaded
 }
 
 func NewClient(id PeerID, port uint16, storage *storage.Storage, announcer Announcer) *Client {
@@ -51,6 +52,7 @@ func NewClient(id PeerID, port uint16, storage *storage.Storage, announcer Annou
 		pms:               make(PeerManagers, 0, 512),
 		intervals:         make(map[torrent.Hash]time.Duration),
 		progressConnReads: make(chan *ProgressConnRead, 512),
+		progressPieces:    make(chan *ProgressPieceDownloaded, 512),
 		progressSpeed:     make(chan *ProgressSpeed),
 	}
 }
@@ -64,6 +66,7 @@ func (c *Client) Run(ctx context.Context) error {
 	defer lis.Close()
 	c.connCh = connCh
 
+	c.sendInitialProgress()
 	c.dms = download.CreateDownloadManagers(c.storage)
 	c.trackerRequests(ctx, torrent.Started)
 
@@ -82,6 +85,17 @@ func (c *Client) Run(ctx context.Context) error {
 
 func (c *Client) ProgressSpeed() <-chan *ProgressSpeed {
 	return c.progressSpeed
+}
+
+func (c *Client) ProgressPieces() <-chan *ProgressPieceDownloaded {
+	return c.progressPieces
+}
+
+func (c *Client) sendInitialProgress() {
+	for t := range c.storage.Iterator() {
+		downloaded := c.storage.GetBitfield(t.InfoHash).DownloadedPiecesCount()
+		c.progressPieces <- NewProgressPieceDownloaded(t.InfoHash, downloaded)
+	}
 }
 
 func (c *Client) trackerRegularRequests(ctx context.Context, wg *sync.WaitGroup) {
@@ -124,7 +138,7 @@ func (c *Client) managePeers(ctx context.Context, wg *sync.WaitGroup) {
 				Port:     uint16(addr.Port),
 				Conn:     conn,
 			}
-			pm := NewPeerManager(c.id, c.storage, peer, c.dms, c.progressConnReads)
+			pm := NewPeerManager(c.id, c.storage, peer, c.dms, c.progressConnReads, c.progressPieces)
 			c.pmsLock.Lock()
 			c.pms = append(c.pms, pm)
 			c.pmsLock.Unlock()
@@ -138,7 +152,7 @@ func (c *Client) managePeers(ctx context.Context, wg *sync.WaitGroup) {
 			for _, peer := range peers {
 				foundPms := c.pms.FindByInfoHashAndIp(peer.InfoHash, peer.IP)
 				if len(foundPms) == 0 {
-					pm := NewPeerManager(c.id, c.storage, peer, c.dms, c.progressConnReads)
+					pm := NewPeerManager(c.id, c.storage, peer, c.dms, c.progressConnReads, c.progressPieces)
 					c.pms = append(c.pms, pm)
 					wg.Add(1)
 					go pm.Run(ctx, wg)

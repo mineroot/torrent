@@ -2,6 +2,7 @@ package bitfield
 
 import (
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"testing"
 )
 
@@ -105,4 +106,40 @@ func TestBitfield_Has(t *testing.T) {
 	assert.PanicsWithValue(t, "pieceIndex out of range", func() {
 		bf.Has(piecesCount + 1)
 	})
+}
+
+func TestBitfield_DownloadedPiecesCount(t *testing.T) {
+	tests := map[string]struct {
+		payload          []byte
+		piecesCount      int
+		downloadedPieces int
+	}{
+		"16": {
+			payload:          []byte{0x0, 0xFF, 0xFF},
+			piecesCount:      24,
+			downloadedPieces: 16,
+		},
+		"21": {
+			payload:          []byte{0xFF, 0xFF, 0b11111000},
+			piecesCount:      21,
+			downloadedPieces: 21,
+		},
+		"13": {
+			payload:          []byte{0b10101010, 0b10101010, 0b11111000},
+			piecesCount:      21,
+			downloadedPieces: 13,
+		},
+		"0": {
+			payload:          []byte{0x0, 0x0, 0x0},
+			piecesCount:      24,
+			downloadedPieces: 0,
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			bf, err := FromPayload(test.payload, test.piecesCount)
+			require.NoError(t, err)
+			assert.Equal(t, test.downloadedPieces, bf.DownloadedPiecesCount())
+		})
+	}
 }

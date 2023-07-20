@@ -81,7 +81,7 @@ type PeerManager struct {
 	file              *os.File
 	dms               *download.Managers
 	progressConnReads chan<- *ProgressConnRead
-	downloadSpeed     atomic.Int64
+	progressPieces    chan<- *ProgressPieceDownloaded
 	requestedBlocks   *download.BlocksSyncMap
 }
 
@@ -91,6 +91,7 @@ func NewPeerManager(
 	peer Peer,
 	dms *download.Managers,
 	progressConnReads chan<- *ProgressConnRead,
+	progressPieces chan<- *ProgressPieceDownloaded,
 ) *PeerManager {
 	pm := &PeerManager{
 		clientId:          clientId,
@@ -101,6 +102,7 @@ func NewPeerManager(
 		bitfieldReceived:  make(chan struct{}),
 		dms:               dms,
 		progressConnReads: progressConnReads,
+		progressPieces:    progressPieces,
 		requestedBlocks:   download.NewBlocksSyncMap(),
 	}
 	pm.isAlive.Store(true)
@@ -460,7 +462,8 @@ func (pm *PeerManager) handleMessages(ctx context.Context) error {
 				// delete block from requested after receiving it
 				pm.requestedBlocks.Delete(block)
 				if isVerified {
-					//pm.progressConnRead <- NewProgressPieceDownloaded(pm.torrent.InfoHash, index)
+					pm.log.Warn().Int("downloaded pieces", pm.myBitfield.DownloadedPiecesCount()).Send()
+					pm.progressPieces <- NewProgressPieceDownloaded(pm.torrent.InfoHash, pm.myBitfield.DownloadedPiecesCount())
 				}
 				pm.log.Debug().Int("piece", index).Str("len", utils.FormatBytes(uint(len(data)))).Msg("block downloaded")
 			case msgCancel:

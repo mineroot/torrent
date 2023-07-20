@@ -3,12 +3,14 @@ package p2p
 import "torrent/p2p/torrent"
 
 type ProgressPieceDownloaded struct {
-	Hash torrent.Hash
+	Hash            torrent.Hash
+	DownloadedCount int
 }
 
-func NewProgressPieceDownloaded(hash torrent.Hash) *ProgressPieceDownloaded {
+func NewProgressPieceDownloaded(hash torrent.Hash, count int) *ProgressPieceDownloaded {
 	return &ProgressPieceDownloaded{
-		Hash: hash,
+		Hash:            hash,
+		DownloadedCount: count,
 	}
 }
 
