@@ -1,4 +1,4 @@
-package p2p
+package tracker
 
 import (
 	"encoding/binary"
@@ -6,28 +6,29 @@ import (
 	"net"
 	"time"
 	"torrent/bencode"
+	"torrent/p2p/peer"
 	"torrent/p2p/torrent"
 )
 
-type trackerResponse struct {
+type response struct {
 	infoHash    torrent.Hash
 	failure     string
 	warning     string
 	interval    time.Duration
 	minInterval time.Duration
 	trackerId   string
-	peers       Peers
+	peers       peer.Peers
 }
 
-func newTrackerResponse(infoHash torrent.Hash) *trackerResponse {
-	return &trackerResponse{
+func newTrackerResponse(infoHash torrent.Hash) *response {
+	return &response{
 		infoHash: infoHash,
 	}
 }
 
-func (r *trackerResponse) unmarshal(benType bencode.BenType) error {
+func (r *response) unmarshal(benType bencode.BenType) error {
 	if r == nil {
-		panic("trackerResponse must be not nil")
+		panic("response must be not nil")
 	}
 	dict, ok := benType.(*bencode.Dictionary)
 	if !ok {
@@ -63,16 +64,15 @@ func (r *trackerResponse) unmarshal(benType bencode.BenType) error {
 		return fmt.Errorf("malformed peers bytes")
 	}
 	peersCount := len(peersBuf) / peerSize
-	r.peers = make(Peers, peersCount)
+	r.peers = make(peer.Peers, peersCount)
 	for i := 0; i < peersCount; i++ {
 		offset := i * peerSize
-		peer := peersBuf[offset : offset+peerSize]
-		r.peers[i] = Peer{
+		p := peersBuf[offset : offset+peerSize]
+		r.peers[i] = peer.Peer{
 			InfoHash: r.infoHash,
-			IP:       peer[:net.IPv4len],
-			Port:     binary.BigEndian.Uint16(peer[net.IPv4len:]),
+			IP:       p[:net.IPv4len],
+			Port:     binary.BigEndian.Uint16(p[net.IPv4len:]),
 		}
 	}
-
 	return nil
 }

@@ -16,6 +16,7 @@ import (
 	"time"
 	"torrent/p2p/bitfield"
 	"torrent/p2p/download"
+	"torrent/p2p/peer"
 	"torrent/p2p/storage"
 	"torrent/p2p/torrent"
 	"torrent/utils"
@@ -62,9 +63,9 @@ func (pms PeerManagers) FindAlive() PeerManagers {
 }
 
 type PeerManager struct {
-	clientId          PeerID
+	clientId          peer.ID
 	storage           storage.Reader
-	peer              Peer
+	peer              peer.Peer
 	isAlive           atomic.Bool
 	incomeMessagesCh  chan *Message
 	outcomeMessageCh  chan *Message
@@ -86,9 +87,9 @@ type PeerManager struct {
 }
 
 func NewPeerManager(
-	clientId PeerID,
+	clientId peer.ID,
 	storage storage.Reader,
-	peer Peer,
+	peer peer.Peer,
 	dms *download.Managers,
 	progressConnReads chan<- *ProgressConnRead,
 	progressPieces chan<- *ProgressPieceDownloaded,
@@ -215,7 +216,7 @@ func (pm *PeerManager) sendHandshake(ctx context.Context) error {
 		return fmt.Errorf("unable to read handshake: %w", err)
 	}
 
-	peerHs := newHandshake(pm.peer.InfoHash, PeerID{})
+	peerHs := newHandshake(pm.peer.InfoHash, peer.ID{})
 	err = peerHs.decode(buf)
 	if err != nil {
 		conn.Close()
@@ -233,7 +234,7 @@ func (pm *PeerManager) acceptHandshake() error {
 	if err != nil {
 		return fmt.Errorf("unable to read handshake: %w", err)
 	}
-	peerHs := newHandshake(pm.peer.InfoHash, PeerID{})
+	peerHs := newHandshake(pm.peer.InfoHash, peer.ID{})
 	err = peerHs.decode(buf)
 	if err != nil {
 		return fmt.Errorf("unable to decode handshake: %w", err)
@@ -462,7 +463,6 @@ func (pm *PeerManager) handleMessages(ctx context.Context) error {
 				// delete block from requested after receiving it
 				pm.requestedBlocks.Delete(block)
 				if isVerified {
-					pm.log.Warn().Int("downloaded pieces", pm.myBitfield.DownloadedPiecesCount()).Send()
 					pm.progressPieces <- NewProgressPieceDownloaded(pm.torrent.InfoHash, pm.myBitfield.DownloadedPiecesCount())
 				}
 				pm.log.Debug().Int("piece", index).Str("len", utils.FormatBytes(uint(len(data)))).Msg("block downloaded")

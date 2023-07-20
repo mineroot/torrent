@@ -4,19 +4,8 @@ import (
 	"bytes"
 	"crypto/sha1"
 	"fmt"
-	"net/url"
 	"os"
-	"strconv"
 	"torrent/bencode"
-)
-
-type Event string
-
-const (
-	Started   Event = "started"
-	Regular         = ""
-	Completed       = "completed"
-	Stopped         = "stopped"
 )
 
 type File struct {
@@ -53,27 +42,6 @@ func Open(torrentFileName, downloadDir string) (*File, error) {
 
 func (t *File) PiecesCount() int {
 	return len(t.PieceHashes)
-}
-
-func (t *File) BuildTrackerURL(id peerID, port uint16, event Event) (string, error) {
-	base, err := url.Parse(t.Announce)
-	if err != nil {
-		return "", err
-	}
-	peerId := id.PeerId()
-	params := url.Values{
-		"info_hash":  []string{string(t.InfoHash[:])},
-		"peer_id":    []string{string(peerId[:])},
-		"port":       []string{strconv.Itoa(int(port))},
-		"uploaded":   []string{"0"},
-		"downloaded": []string{"0"},
-		"compact":    []string{"1"},
-		"left":       []string{strconv.Itoa(t.Length)},
-		"event":      []string{string(event)},
-		"numwant":    []string{"100"},
-	}
-	base.RawQuery = params.Encode()
-	return base.String(), nil
 }
 
 func (t *File) unmarshal(benType bencode.BenType) error {
@@ -140,10 +108,4 @@ func (t *File) unmarshal(benType bencode.BenType) error {
 	t.PieceHashes = pieceHashes
 	t.InfoHash = infoHash
 	return nil
-}
-
-const peerIdSize = 20
-
-type peerID interface {
-	PeerId() [peerIdSize]byte
 }

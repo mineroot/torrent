@@ -2,14 +2,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
-	"net/http"
 	"os"
 	"sync"
 	"torrent/p2p"
+	"torrent/p2p/peer"
 	"torrent/p2p/storage"
 	"torrent/p2p/torrent"
 	"torrent/ui"
@@ -46,25 +47,19 @@ func main() {
 		l.Fatal().Err(err).Send()
 	}
 
-	client := p2p.NewClient(p2p.PeerID([]byte("-GO0001-random_bytes")), listenPort, s, &http.Client{})
+	client := p2p.NewClient(peer.ID([]byte("-GO0001-random_bytes")), listenPort, s)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ctx = l.WithContext(ctx)
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		_ = client.Run(ctx)
-	}()
-
 	app := ui.CreateApp(s, client.ProgressSpeed(), client.ProgressPieces())
 	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		if event.Key() == tcell.KeyCtrlC || event.Key() == tcell.KeyEscape {
 			cancel()
 			app.Stop()
-			fmt.Print("Shouting down...")
+			fmt.Print("Shouting down... ")
 		}
 		return event
 	})
@@ -72,10 +67,19 @@ func main() {
 	go func() {
 		defer wg.Done()
 		if err := app.Run(); err != nil {
-			panic(err)
+			fmt.Println(err)
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err = client.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			app.Stop()
+			fmt.Println(err)
 		}
 	}()
 
 	wg.Wait()
-	fmt.Println(" done")
+	fmt.Println("done")
 }

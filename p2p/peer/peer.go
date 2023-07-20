@@ -1,10 +1,18 @@
-package p2p
+package peer
 
 import (
 	"fmt"
 	"net"
 	"torrent/p2p/torrent"
 )
+
+const IdSize = 20
+
+type ID [IdSize]byte
+
+func (id ID) PeerId() [IdSize]byte {
+	return id
+}
 
 type Peers []Peer
 

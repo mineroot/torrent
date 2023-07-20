@@ -118,14 +118,15 @@ func (s *Storage) Set(infoHash torrent.Hash, torrent *torrent.File) error {
 	return nil
 }
 
-func (s *Storage) Close() error {
-	s.lock.RLock()
-	defer s.lock.RUnlock()
-	var err error
+func (s *Storage) Close() (lastErr error) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
 	for _, file := range s.files {
-		err = file.Close()
+		if err := file.Close(); err != nil {
+			lastErr = err
+		}
 	}
-	return err
+	return
 }
 
 func (s *Storage) fillFile(w io.WriterAt, torrent *torrent.File) error {
