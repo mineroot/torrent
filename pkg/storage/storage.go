@@ -89,7 +89,7 @@ func (s *Storage) Set(infoHash torrent.Hash, torrent *torrent.File) error {
 	path := filepath.Join(torrent.DownloadDir, torrent.Name)
 	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0664)
 	if err != nil {
-		return fmt.Errorf("unable not open file %s: %w", path, err)
+		return fmt.Errorf("unable to open file %s: %w", path, err)
 	}
 	fInfo, err := file.Stat()
 	if err != nil {
