@@ -4,12 +4,13 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"github.com/mineroot/torrent/pkg/bencode"
 	"io"
 	"net/http"
 	"net/url"
 	"strconv"
 	"time"
+
+	"github.com/mineroot/torrent/pkg/bencode"
 
 	"github.com/mineroot/torrent/pkg/peer"
 	"github.com/mineroot/torrent/pkg/torrent"
@@ -50,7 +51,7 @@ func (t *Tracker) Run(ctx context.Context) error {
 		case <-ticker.C:
 			err = t.handleEvent(ctx, regular)
 			if err != nil {
-				return fmt.Errorf("tracker: %w", err)
+				return fmt.Errorf("tracker: %w", err) // todo: do not return?
 			}
 		}
 	}

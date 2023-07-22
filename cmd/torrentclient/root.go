@@ -8,10 +8,10 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
 	"os"
 	"path"
 	"path/filepath"
-	"sync"
 
 	"github.com/mineroot/torrent/pkg"
 	"github.com/mineroot/torrent/pkg/peer"
@@ -87,36 +87,25 @@ func run(*cobra.Command, []string) error {
 	defer cancel()
 	ctx = l.WithContext(ctx)
 
-	var wg sync.WaitGroup
 	app := ui.CreateApp(s, client.ProgressSpeed(), client.ProgressPieces())
 	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		if event.Key() == tcell.KeyCtrlC || event.Key() == tcell.KeyEscape {
 			cancel()
 			app.Stop()
-			fmt.Print("Shouting down... ")
 		}
 		return event
 	})
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if err := app.Run(); err != nil {
-			fmt.Println(err)
-		}
-	}()
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if err = client.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			app.Stop()
-			fmt.Println(err)
-		}
-	}()
-
-	wg.Wait()
-	fmt.Println("done")
-	return nil
+	g, ctx := errgroup.WithContext(ctx)
+	g.Go(app.Run)
+	g.Go(func() error {
+		defer app.Stop()
+		return client.Run(ctx)
+	})
+	if err = g.Wait(); errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return err
 }
 
 func openLogFile() (*os.File, error) {
