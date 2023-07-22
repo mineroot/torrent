@@ -1,88 +1,75 @@
 package pkg
 
-//
-//func TestClient_Run(t *testing.T) {
-//	initialGrowFactor = 40
-//	_ = os.Remove("../testdata/downloads/local/cat.png")
-//	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-//	defer cancel()
-//
-//	var wg sync.WaitGroup
-//	wg.Add(2)
-//	go func() {
-//		defer wg.Done()
-//		err := createRemoteClient(t).Run(ctx)
-//		assert.ErrorIs(t, err, context.DeadlineExceeded)
-//	}()
-//
-//	l := log.Output(zerolog.ConsoleWriter{Out: os.Stderr}).With().Caller().Logger().Level(zerolog.InfoLevel)
-//	go func() {
-//		// attach logger only for a local client
-//		ctx := l.WithContext(ctx)
-//		defer wg.Done()
-//		err := createLocalClient(t).Run(ctx)
-//		assert.ErrorIs(t, err, context.DeadlineExceeded)
-//	}()
-//	wg.Wait()
-//
-//	// check downloaded file is correct
-//	buf, err := os.ReadFile("../testdata/downloads/local/cat.png")
-//	require.NoError(t, err)
-//	sum256 := sha256.Sum256(buf)
-//	assert.Equal(t, "f3c20915cc8dfacb802d4858afd8c7ca974529f6259e9250bc52594d71042c30", hex.EncodeToString(sum256[:]))
-//}
-//
-//func createLocalClient(t *testing.T) *Client {
-//	// ip 127.0.0.1, port 6881
-//	peers := bencode.NewString(string([]byte{0x7F, 0x0, 0x0, 0x1, 0x1A, 0xE1}))
-//	response := bencode.NewDictionary(
-//		map[bencode.String]bencode.BenType{
-//			*bencode.NewString("interval"): bencode.NewInteger(900),
-//			*bencode.NewString("peers"):    peers,
-//		},
-//	)
-//	buf := &bytes.Buffer{}
-//	err := bencode.Encode(buf, []bencode.BenType{response})
-//	require.NoError(t, err)
-//
-//	announcer := pkg.NewMockAnnouncer(t)
-//	readCloser := &body{Buffer: buf}
-//	announcer.EXPECT().Do(mock.Anything).Return(&http.Response{Body: readCloser}, nil)
-//	torrentFile, err := torrent.Open("../testdata/cat.png.torrent", "../testdata/downloads/local")
-//	require.NoError(t, err)
-//	s := storage.NewStorage()
-//	err = s.Set(torrentFile.InfoHash, torrentFile)
-//	require.NoError(t, err)
-//	return NewClient(peer.ID([]byte("-GO0001-local_peer00")), 6882, s, announcer)
-//}
-//
-//func createRemoteClient(t *testing.T) *Client {
-//	peers := bencode.NewString("")
-//	response := bencode.NewDictionary(
-//		map[bencode.String]bencode.BenType{
-//			*bencode.NewString("interval"): bencode.NewInteger(900),
-//			*bencode.NewString("peers"):    peers,
-//		},
-//	)
-//	buf := &bytes.Buffer{}
-//	err := bencode.Encode(buf, []bencode.BenType{response})
-//	require.NoError(t, err)
-//
-//	announcer := pkg.NewMockAnnouncer(t)
-//	readCloser := &body{Buffer: buf}
-//	announcer.EXPECT().Do(mock.Anything).Return(&http.Response{Body: readCloser}, nil)
-//	torrentFile, err := torrent.Open("../testdata/cat.png.torrent", "../testdata/downloads/remote")
-//	require.NoError(t, err)
-//	s := storage.NewStorage()
-//	err = s.Set(torrentFile.InfoHash, torrentFile)
-//	require.NoError(t, err)
-//	return NewClient(peer.ID([]byte("-GO0001-remote_peer0")), 6881, s, announcer)
-//}
-//
-//type body struct {
-//	*bytes.Buffer
-//}
-//
-//func (b *body) Close() error {
-//	return nil
-//}
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"golang.org/x/sync/errgroup"
+	"net/http"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/mineroot/torrent/pkg/peer"
+	"github.com/mineroot/torrent/pkg/storage"
+	"github.com/mineroot/torrent/pkg/torrent"
+	"github.com/mineroot/torrent/pkg/tracker"
+)
+
+func TestClient_Run(t *testing.T) {
+	_ = os.Remove("../testdata/downloads/local/cat.png")
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	l := log.Output(zerolog.ConsoleWriter{Out: os.Stderr}).With().Caller().Logger().Level(zerolog.InfoLevel)
+	ft := tracker.NewFakeTracker(":8080")
+
+	g, ctx := errgroup.WithContext(ctx)
+	// run fake tracker
+	g.Go(func() error {
+		err := ft.ListenAndServe()
+		assert.ErrorIs(t, err, http.ErrServerClosed)
+		return err
+	})
+	// shout down fake tracker
+	g.Go(func() error {
+		<-ctx.Done()
+		err := ft.Shutdown(context.Background())
+		assert.NoError(t, err)
+		return err
+	})
+	time.Sleep(10 * time.Millisecond) // wait till fake tracker starts up
+	// run a remote peer's client for seeding
+	g.Go(func() error {
+		err := createClient(t, 6881, "../testdata/downloads/remote", "-GO0001-remote_peer0").Run(ctx)
+		assert.ErrorIs(t, err, context.DeadlineExceeded)
+		return err
+	})
+	// run a local client for downloading
+	g.Go(func() error {
+		time.Sleep(10 * time.Millisecond) // wait till remote peer announces itself to the fake tracker
+		ctx := l.WithContext(ctx)         // attach logger for a local client only
+		err := createClient(t, 6882, "../testdata/downloads/local", "-GO0001-local_peer00").Run(ctx)
+		assert.ErrorIs(t, err, context.DeadlineExceeded)
+		return err
+	})
+	assert.Error(t, g.Wait()) // wait 15 seconds till ctx cancels for downloading completion
+
+	// check downloaded file is correct
+	buf, err := os.ReadFile("../testdata/downloads/local/cat.png")
+	require.NoError(t, err)
+	sum256 := sha256.Sum256(buf)
+	assert.Equal(t, "f3c20915cc8dfacb802d4858afd8c7ca974529f6259e9250bc52594d71042c30", hex.EncodeToString(sum256[:]))
+}
+
+func createClient(t *testing.T, port uint16, downloadDir, peerId string) *Client {
+	torrentFile, err := torrent.Open("../testdata/cat.png.torrent", downloadDir)
+	require.NoError(t, err)
+	s := storage.NewStorage()
+	err = s.Set(torrentFile.InfoHash, torrentFile)
+	require.NoError(t, err)
+	return NewClient(peer.ID([]byte(peerId)), port, s)
+}

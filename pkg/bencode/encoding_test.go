@@ -43,8 +43,7 @@ func TestEncode(t *testing.T) {
 }
 
 func TestDecode(t *testing.T) {
-	//r := strings.NewReader("d4:key16:value14:key26:value24:key3i123e4:key4d8:sub_key110:sub_value18:sub_key210:sub_value2e4:key5l6:stringi123eee")
-	r, err := os.Open("../testdata/debian-12.0.0-amd64-netinst.iso.torrent")
+	r, err := os.Open("../../testdata/debian-12.0.0-amd64-netinst.iso.torrent")
 	require.NoError(t, err)
 	defer r.Close()
 	decoded, err := Decode(r)
