@@ -7,6 +7,7 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
 	"os"
@@ -63,7 +64,7 @@ func run(*cobra.Command, []string) error {
 
 	l := log.Output(zerolog.ConsoleWriter{Out: logFile}).With().Caller().Logger().Level(zerolog.InfoLevel)
 
-	s := storage.NewStorage()
+	s := storage.NewStorage(afero.NewOsFs())
 	for i := 0; i < len(torrents); i++ {
 		torrentPath, err := filepath.Abs(torrents[i])
 		if err != nil {
@@ -77,7 +78,7 @@ func run(*cobra.Command, []string) error {
 		if err != nil {
 			return fmt.Errorf("unable to open torrent file: %w", err)
 		}
-		if err = s.Set(t.InfoHash, t); err != nil {
+		if err = s.Set(t); err != nil {
 			return fmt.Errorf("unable to add torrent to storage: %w", err)
 		}
 	}

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"github.com/spf13/afero"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sync/errgroup"
@@ -68,8 +69,8 @@ func TestClient_Run(t *testing.T) {
 func createClient(t *testing.T, port uint16, downloadDir, peerId string) *Client {
 	torrentFile, err := torrent.Open("../testdata/cat.png.torrent", downloadDir)
 	require.NoError(t, err)
-	s := storage.NewStorage()
-	err = s.Set(torrentFile.InfoHash, torrentFile)
+	s := storage.NewStorage(afero.NewOsFs())
+	err = s.Set(torrentFile)
 	require.NoError(t, err)
 	return NewClient(peer.ID([]byte(peerId)), port, s)
 }

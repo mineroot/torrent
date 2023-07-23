@@ -14,5 +14,5 @@ func TestOpen(t *testing.T) {
 	assert.Equal(t, "debian-12.0.0-amd64-netinst.iso", torrent.Name)
 	assert.Equal(t, 262144, torrent.PieceLength)
 	assert.Equal(t, 773849088, torrent.Length)
-	assert.Len(t, torrent.PieceHashes, 2952)
+	assert.Equal(t, 2952, torrent.PiecesCount())
 }

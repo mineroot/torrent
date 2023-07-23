@@ -2,6 +2,8 @@ package storage
 
 import (
 	"fmt"
+	"github.com/spf13/afero"
+	"golang.org/x/sync/errgroup"
 	"io"
 	"os"
 	"path/filepath"
@@ -15,24 +17,23 @@ type Reader interface {
 	Iterator() <-chan *torrent.File
 	Get(infoHash torrent.Hash) *torrent.File
 	GetBitfield(infoHash torrent.Hash) *bitfield.Bitfield
-	GetFile(infoHash torrent.Hash) *os.File
+	GetFile(infoHash torrent.Hash) afero.File
 }
 
 type Storage struct {
-	calculator BitfieldCalculator
-
+	fs        afero.Fs
 	lock      sync.RWMutex
 	torrents  map[torrent.Hash]*torrent.File
 	bitfields map[torrent.Hash]*bitfield.Bitfield
-	files     map[torrent.Hash]*os.File
+	files     map[torrent.Hash]afero.File
 }
 
-func NewStorage() *Storage {
+func NewStorage(fs afero.Fs) *Storage {
 	return &Storage{
-		calculator: &bitfieldConcurrentCalculator{},
-		torrents:   make(map[torrent.Hash]*torrent.File),
-		bitfields:  make(map[torrent.Hash]*bitfield.Bitfield),
-		files:      make(map[torrent.Hash]*os.File),
+		fs:        fs,
+		torrents:  make(map[torrent.Hash]*torrent.File),
+		bitfields: make(map[torrent.Hash]*bitfield.Bitfield),
+		files:     make(map[torrent.Hash]afero.File),
 	}
 }
 
@@ -63,7 +64,7 @@ func (s *Storage) GetBitfield(infoHash torrent.Hash) *bitfield.Bitfield {
 	return s.bitfields[infoHash]
 }
 
-func (s *Storage) GetFile(infoHash torrent.Hash) *os.File {
+func (s *Storage) GetFile(infoHash torrent.Hash) afero.File {
 	s.lock.RLock()
 	defer s.lock.RUnlock()
 	return s.files[infoHash]
@@ -75,19 +76,16 @@ func (s *Storage) Len() int {
 	return len(s.torrents)
 }
 
-func (s *Storage) Set(infoHash torrent.Hash, torrent *torrent.File) error {
+func (s *Storage) Set(torrent *torrent.File) error {
 	if torrent == nil {
 		panic("torrent must not be nil")
-	}
-	if infoHash != torrent.InfoHash {
-		panic("infoHash is not equal torrent.InfoHash")
 	}
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
 	// open or crate file for read and write
 	path := filepath.Join(torrent.DownloadDir, torrent.Name)
-	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0664)
+	file, err := s.fs.OpenFile(path, os.O_RDWR|os.O_CREATE, 0664)
 	if err != nil {
 		return fmt.Errorf("unable to open file %s: %w", path, err)
 	}
@@ -106,15 +104,15 @@ func (s *Storage) Set(infoHash torrent.Hash, torrent *torrent.File) error {
 		bf = bitfield.New(torrent.PiecesCount())
 	} else {
 		// calculate bitfield
-		bf, err = s.calculator.Calculate(file, torrent.PieceHashes, torrent.PieceLength)
+		bf, err = calculateBitfield(file, torrent.PieceHashes, torrent.PieceLength)
 		if err != nil {
 			return fmt.Errorf("unable to calculate bitfield: %w", err)
 		}
 	}
 	// add to storage all torrent's bitfield, file handler and torrent itself
-	s.torrents[infoHash] = torrent
-	s.bitfields[infoHash] = bf
-	s.files[infoHash] = file
+	s.torrents[torrent.InfoHash] = torrent
+	s.bitfields[torrent.InfoHash] = bf
+	s.files[torrent.InfoHash] = file
 
 	return nil
 }
@@ -156,4 +154,35 @@ func (s *Storage) fillFile(w io.WriterAt, torrent *torrent.File) error {
 		return fmt.Errorf("written %d, expected %d", written, torrent.Length)
 	}
 	return nil
+}
+
+func calculateBitfield(r io.ReaderAt, hashes []torrent.Hash, pieceLen int) (*bitfield.Bitfield, error) {
+	const bits = 8
+	piecesCount := len(hashes)
+	bf := bitfield.New(piecesCount)
+	g := new(errgroup.Group)
+	var lock sync.Mutex
+	for i := 0; i < bf.BitfieldSize(); i++ {
+		i := i
+		g.Go(func() error {
+			for j := 0; j < bits; j++ {
+				pieceIndex := i*bits + j
+				if pieceIndex >= len(hashes) {
+					return nil
+				}
+				lock.Lock()
+				ok, err := torrent.VerifyPiece(r, hashes[pieceIndex], pieceIndex, pieceLen)
+				lock.Unlock()
+				if err != nil {
+					return err
+				}
+				if ok {
+					bf.Set(pieceIndex)
+				}
+			}
+			return nil
+		})
+	}
+	err := g.Wait()
+	return bf, err
 }

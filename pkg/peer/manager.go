@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"github.com/spf13/afero"
 	"golang.org/x/sync/errgroup"
 	"io"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -47,7 +47,7 @@ type Manager struct {
 	log               zerolog.Logger
 	torrent           *torrent.File
 	dm                *download.Manager
-	file              *os.File
+	file              afero.File
 	dms               *download.Managers
 	progressConnReads chan<- *event.ProgressConnRead
 	progressPieces    chan<- *event.ProgressPieceDownloaded
