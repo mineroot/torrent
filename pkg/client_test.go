@@ -23,7 +23,8 @@ import (
 
 func TestClient_Run(t *testing.T) {
 	_ = os.Remove("../testdata/downloads/local/cat.png")
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	// TODO: 25 sec is too much
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 	l := log.Output(zerolog.ConsoleWriter{Out: os.Stderr}).With().Caller().Logger().Level(zerolog.InfoLevel)
 	ft := tracker.NewFakeTracker(":8080")

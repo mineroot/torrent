@@ -117,7 +117,7 @@ func openLogFile() (*os.File, error) {
 	}
 	logDirPath := path.Join(homeDir, logDir)
 	if _, err = os.Stat(logDirPath); os.IsNotExist(err) {
-		if err = os.Mkdir(logDirPath, 0664); err != nil {
+		if err = os.Mkdir(logDirPath, 0755); err != nil {
 			return nil, fmt.Errorf("unable to create log directory: %w", err)
 		}
 	} else if err != nil {

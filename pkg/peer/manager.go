@@ -27,9 +27,6 @@ const (
 	pstr         = "BitTorrent protocol"
 )
 
-// for overriding in tests
-var initialGrowFactor = 4
-
 type Manager struct {
 	clientId          ID
 	storage           storage.Reader
@@ -231,7 +228,7 @@ func (pm *Manager) download(ctx context.Context) error {
 	}
 
 	const minGrowFactor = 1
-	growFactor := initialGrowFactor
+	growFactor := 4
 	growFunc := func(x int) int {
 		if x < 5 {
 			return x * x
@@ -285,7 +282,7 @@ func (pm *Manager) download(ctx context.Context) error {
 		}
 		// wait 1 sec
 		<-ticker.C
-		// if block non received in 5 seconds, we assume it never will be received
+		// if block isn't received in 5 seconds, we assume it never will be received
 		remainingRequests := pm.requestedBlocks.LenNonExpired(5 * time.Second)
 		// adjust growFactor based on non-expired blocks count
 		if remainingRequests > 0 {
@@ -311,71 +308,14 @@ func (pm *Manager) handleMessages(ctx context.Context) error {
 			pm.log.Debug().
 				Int("messageId", int(message.ID)).Str("payload_len", utils.FormatBytes(uint(len(message.Payload)))).
 				Msg("msg received")
-			switch message.ID {
-			case msgChoke:
-				pm.amChoking.Store(true)
-			case msgUnChoke:
-				pm.amChoking.Store(false)
-			case msgInterested:
-				pm.peerInterested.Store(true)
-			case msgNotInterested:
-				pm.peerInterested.Store(false)
-			case msgHave:
-			case msgBitfield:
-				bf, err := bitfield.FromPayload(message.Payload, pm.torrent.PiecesCount())
-				if err != nil {
-					return err
-				}
-				pm.peerBitfield = bf
-				pm.bitfieldReceived <- struct{}{}
-			case msgRequest:
-				index := binary.BigEndian.Uint32(message.Payload[:4])
-				begin := binary.BigEndian.Uint32(message.Payload[4:8])
-				length := binary.BigEndian.Uint32(message.Payload[8:12])
-				offset := int(index)*pm.torrent.PieceLength + int(begin)
-				if offset+int(length) > pm.torrent.Length {
-					length = uint32(pm.torrent.Length - offset)
-				}
-				buf := make([]byte, length)
-				_, err := pm.file.ReadAt(buf, int64(offset))
-				if err != nil {
-					return err
-				}
-				_ = pm.sendMessage(ctx, NewPiece(index, begin, buf))
-			case msgPiece:
-				index := int(binary.BigEndian.Uint32(message.Payload[:4]))
-				// discard block if we already have its piece
-				if pm.myBitfield.Has(index) {
-					pm.log.Warn().Int("piece", index).Msg("block discarded")
-					break
-				}
-				begin := binary.BigEndian.Uint32(message.Payload[4:8])
-				data := message.Payload[8:]
-				offset := index*pm.torrent.PieceLength + int(begin)
-				_, err := pm.file.WriteAt(data, int64(offset))
-				if err != nil {
-					return err
-				}
 
-				block := download.Block{
-					PieceIndex: index,
-					Begin:      int(begin),
-					Len:        len(data),
-				}
-				isVerified, err := pm.dm.MarkAsDownloaded(block, pm.file, pm.torrent.PieceHashes[index], pm.torrent.PieceLength)
-				if err != nil {
-					return err
-				}
-				// delete block from requested after receiving it
-				pm.requestedBlocks.Delete(block)
-				if isVerified {
-					pm.progressPieces <- event.NewProgressPieceDownloaded(pm.torrent.InfoHash, pm.myBitfield.DownloadedPiecesCount())
-				}
-				pm.log.Debug().Int("piece", index).Str("len", utils.FormatBytes(uint(len(data)))).Msg("block downloaded")
-			case msgCancel:
-			case msgPort:
-			default:
+			handler, ok := messageHandlers[message.ID]
+			if !ok {
 				pm.log.Warn().Int("message_id", int(message.ID)).Bytes("payload", message.Payload).Msg("unknown message id")
+				break
+			}
+			if err := handler(ctx, pm, message); err != nil {
+				return nil
 			}
 		}
 	}
