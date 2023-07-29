@@ -87,9 +87,7 @@ func (c *Client) sendInitialProgress() {
 }
 
 func (c *Client) managePeers(ctx context.Context) error {
-	wg := new(sync.WaitGroup)
-	defer wg.Wait()
-
+	g := new(errgroup.Group)
 	l := log.Ctx(ctx)
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -106,12 +104,13 @@ func (c *Client) managePeers(ctx context.Context) error {
 				Port:     uint16(addr.Port),
 				Conn:     conn,
 			}
-			pm := peer.NewManager(c.id, c.storage, p, c.dms, c.progressConnReads, c.progressPieces)
+			pm := peer.NewManager(c.id, &net.Dialer{}, c.storage, p, c.dms, c.progressConnReads, c.progressPieces)
 			c.pmsLock.Lock()
 			c.pms = append(c.pms, pm)
 			c.pmsLock.Unlock()
-			wg.Add(1)
-			go pm.Run(ctx, wg)
+			g.Go(func() error {
+				return pm.Run(ctx)
+			})
 		case peers, ok := <-c.peersCh:
 			if !ok {
 				return nil
@@ -120,10 +119,11 @@ func (c *Client) managePeers(ctx context.Context) error {
 			for _, p := range peers {
 				foundPms := c.pms.FindByInfoHashAndIp(p.InfoHash, p.IP)
 				if len(foundPms) == 0 {
-					pm := peer.NewManager(c.id, c.storage, p, c.dms, c.progressConnReads, c.progressPieces)
+					pm := peer.NewManager(c.id, &net.Dialer{}, c.storage, p, c.dms, c.progressConnReads, c.progressPieces)
 					c.pms = append(c.pms, pm)
-					wg.Add(1)
-					go pm.Run(ctx, wg)
+					g.Go(func() error {
+						return pm.Run(ctx)
+					})
 				}
 			}
 			c.pmsLock.Unlock()
@@ -137,6 +137,7 @@ func (c *Client) managePeers(ctx context.Context) error {
 				Msg("dead peers cleanup")
 			c.pmsLock.Unlock()
 		case <-ctx.Done():
+			_ = g.Wait()
 			return ctx.Err()
 		}
 	}

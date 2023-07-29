@@ -1,6 +1,7 @@
 package peer
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -32,60 +33,78 @@ func (p *Peer) Address() string {
 	return fmt.Sprintf("%s:%d", p.IP, p.Port)
 }
 
-func (p *Peer) sendHandshake(id ID) error {
-	conn, err := net.DialTimeout("tcp", p.Address(), 5*time.Second)
-	if err != nil {
-		return fmt.Errorf("unable to establish conn: %w", err)
-	}
-	defer conn.SetDeadline(time.Time{})
-	myHs := newHandshake(p.InfoHash, id)
-	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	_, err = conn.Write(myHs.encode())
-	if err != nil {
-		conn.Close()
-		return fmt.Errorf("unable to write handshake: %w", err)
-	}
-	buf := make([]byte, handshakeLen)
-	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	_, err = io.ReadFull(conn, buf)
-	if err != nil {
-		conn.Close()
-		return fmt.Errorf("unable to read handshake: %w", err)
-	}
+func (p *Peer) sendHandshake(ctx context.Context, dialer ContextDialer, id ID) (err error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 
-	peerHs := newHandshake(p.InfoHash, ID{})
-	err = peerHs.decode(buf)
-	if err != nil {
-		conn.Close()
-		return fmt.Errorf("unable to decode handshake: %w", err)
+	errCh := make(chan error, 1)
+	go func() {
+		defer close(errCh)
+		var err error
+		if p.Conn, err = dialer.DialContext(ctx, "tcp", p.Address()); err != nil {
+			errCh <- fmt.Errorf("unable to establish conn: %w", err)
+			return
+		}
+		myHs := newHandshake(p.InfoHash, id)
+		if _, err = p.Conn.Write(myHs.encode()); err != nil {
+			errCh <- fmt.Errorf("unable to write handshake: %w", err)
+			return
+		}
+		buf := make([]byte, handshakeLen)
+		if _, err = io.ReadFull(p.Conn, buf); err != nil {
+			errCh <- fmt.Errorf("unable to read handshake: %w", err)
+			return
+		}
+		peerHs := newHandshake(p.InfoHash, ID{})
+		if err = peerHs.decode(buf); err != nil {
+			errCh <- fmt.Errorf("unable to decode handshake: %w", err)
+			return
+		}
+	}()
+	select {
+	case <-ctx.Done():
+		if p.Conn != nil {
+			p.Conn.SetDeadline(time.Now())
+		}
+		err = ctx.Err()
+	case err = <-errCh:
 	}
-	p.Conn = conn
-	return nil
+	return
 }
 
-func (p *Peer) acceptHandshake(id ID, storage storage.Reader) (*torrent.File, error) {
-	defer p.Conn.SetDeadline(time.Time{})
-	buf := make([]byte, handshakeLen)
-	_ = p.Conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	_, err := io.ReadFull(p.Conn, buf)
-	if err != nil {
-		return nil, fmt.Errorf("unable to read handshake: %w", err)
+func (p *Peer) acceptHandshake(ctx context.Context, storage storage.Reader, id ID) (t *torrent.File, err error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		defer close(errCh)
+		buf := make([]byte, handshakeLen)
+		if _, err := io.ReadFull(p.Conn, buf); err != nil {
+			errCh <- fmt.Errorf("unable to read handshake: %w", err)
+			return
+		}
+		peerHs := newHandshake(p.InfoHash, ID{})
+		err := peerHs.decode(buf)
+		if err != nil {
+			errCh <- fmt.Errorf("unable to decode handshake: %w", err)
+			return
+		}
+		p.InfoHash = peerHs.infoHash
+		if t = storage.Get(p.InfoHash); t == nil {
+			errCh <- fmt.Errorf("torrent with info hash %s not found", p.InfoHash)
+			return
+		}
+		myHs := newHandshake(p.InfoHash, id)
+		if _, err = p.Conn.Write(myHs.encode()); err != nil {
+			errCh <- fmt.Errorf("unable to write handshake: %w", err)
+		}
+	}()
+	select {
+	case <-ctx.Done():
+		p.Conn.SetDeadline(time.Now())
+		err = ctx.Err()
+	case err = <-errCh:
 	}
-	peerHs := newHandshake(p.InfoHash, ID{})
-	err = peerHs.decode(buf)
-	if err != nil {
-		return nil, fmt.Errorf("unable to decode handshake: %w", err)
-	}
-	p.InfoHash = peerHs.infoHash
-	t := storage.Get(p.InfoHash)
-	if t == nil {
-		return nil, fmt.Errorf("torrent with info hash %s not found", p.InfoHash)
-	}
-	myHs := newHandshake(p.InfoHash, id)
-	_ = p.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	_, err = p.Conn.Write(myHs.encode())
-	if err != nil {
-		return nil, fmt.Errorf("unable to write handshake: %w", err)
-	}
-	return t, err
+	return
 }

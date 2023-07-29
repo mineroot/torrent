@@ -28,7 +28,9 @@ const (
 )
 
 type Manager struct {
+	once              *sync.Once
 	clientId          ID
+	dialer            ContextDialer
 	storage           storage.Reader
 	peer              Peer
 	isAlive           atomic.Bool
@@ -43,9 +45,9 @@ type Manager struct {
 	myBitfield        *bitfield.Bitfield
 	log               zerolog.Logger
 	torrent           *torrent.File
+	dms               *download.Managers
 	dm                *download.Manager
 	file              afero.File
-	dms               *download.Managers
 	progressConnReads chan<- *event.ProgressConnRead
 	progressPieces    chan<- *event.ProgressPieceDownloaded
 	requestedBlocks   *download.BlocksSyncMap
@@ -53,6 +55,7 @@ type Manager struct {
 
 func NewManager(
 	clientId ID,
+	dialer ContextDialer,
 	storage storage.Reader,
 	peer Peer,
 	dms *download.Managers,
@@ -60,7 +63,9 @@ func NewManager(
 	progressPieces chan<- *event.ProgressPieceDownloaded,
 ) *Manager {
 	pm := &Manager{
+		once:              new(sync.Once),
 		clientId:          clientId,
+		dialer:            dialer,
 		storage:           storage,
 		peer:              peer,
 		incomeMessagesCh:  make(chan *Message, 512),
@@ -77,36 +82,40 @@ func NewManager(
 	return pm
 }
 
-func (pm *Manager) GetHash() torrent.Hash {
-	return pm.peer.InfoHash
+func (pm *Manager) Run(ctx context.Context) (err error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	pm.once.Do(func() {
+		pm.setLoggerFromCtx(ctx)
+		err = pm.run(ctx)
+		pm.isAlive.Store(false)
+	})
+	if err != nil {
+		pm.log.Error().Err(err).Msg("peer manager is dying...")
+	}
+	return
 }
 
-func (pm *Manager) Run(ctx context.Context, wg *sync.WaitGroup) {
-	defer func() {
-		wg.Done()
-		pm.isAlive.Store(false)
+func (pm *Manager) run(ctx context.Context) (err error) {
+	g, ctx := errgroup.WithContext(ctx)
+	go func() {
+		<-ctx.Done()
+		if pm.peer.Conn != nil {
+			pm.peer.Conn.Close()
+		}
 	}()
-	if !pm.isAlive.Load() {
-		panic("peer manager is not alive")
-	}
-	pm.setLoggerFromCtx(ctx)
 
-	var err error
 	if pm.peer.Conn == nil {
 		// we initiate connection and send a handshake first
-		if err = pm.peer.sendHandshake(pm.clientId); err != nil {
-			err = fmt.Errorf("unable to send handshake too remote peer: %w", err)
+		if err = pm.peer.sendHandshake(ctx, pm.dialer, pm.clientId); err != nil {
+			return fmt.Errorf("unable to send handshake too remote peer: %w", err)
 		}
 		pm.torrent = pm.storage.Get(pm.peer.InfoHash)
 	} else {
 		// remote peer connected to us, and we are waiting for a handshake
-		if pm.torrent, err = pm.peer.acceptHandshake(pm.clientId, pm.storage); err != nil {
-			err = fmt.Errorf("unable to accept handshake from remote peer: %w", err)
+		if pm.torrent, err = pm.peer.acceptHandshake(ctx, pm.storage, pm.clientId); err != nil {
+			return fmt.Errorf("unable to accept handshake from remote peer: %w", err)
 		}
-	}
-	if err != nil {
-		pm.log.Error().Err(err).Send()
-		return
 	}
 	pm.log.Info().Msg("successful handshake")
 
@@ -120,7 +129,6 @@ func (pm *Manager) Run(ctx context.Context, wg *sync.WaitGroup) {
 	time.Sleep(time.Second)
 	_ = pm.sendMessage(ctx, NewInterested())
 
-	g, ctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
 		return pm.readMessages()
 	})
@@ -133,26 +141,7 @@ func (pm *Manager) Run(ctx context.Context, wg *sync.WaitGroup) {
 	g.Go(func() error {
 		return pm.download(ctx)
 	})
-	g.Go(func() error {
-		return pm.kill(ctx)
-	})
-
-	if err = g.Wait(); err != nil {
-		pm.log.Error().Err(err).Msg("peer manager is dying...")
-	}
-}
-
-func (pm *Manager) IsAlive() bool {
-	return pm.isAlive.Load()
-}
-
-func (pm *Manager) kill(ctx context.Context) error {
-	<-ctx.Done()
-	pm.isAlive.Store(false)
-	if pm.peer.Conn != nil {
-		pm.peer.Conn.Close()
-	}
-	return nil
+	return g.Wait()
 }
 
 func (pm *Manager) readMessages() error {
@@ -282,7 +271,7 @@ func (pm *Manager) download(ctx context.Context) error {
 		}
 		// wait 1 sec
 		<-ticker.C
-		// if block isn't received in 5 seconds, we assume it never will be received
+		// if a block isn't received in 5 seconds, we assume it never will be received
 		remainingRequests := pm.requestedBlocks.LenNonExpired(5 * time.Second)
 		// adjust growFactor based on non-expired blocks count
 		if remainingRequests > 0 {
@@ -328,4 +317,12 @@ func (pm *Manager) setLoggerFromCtx(ctx context.Context) {
 				e.Str("info_hash", pm.peer.InfoHash.String())
 			}
 		}))
+}
+
+func (pm *Manager) GetHash() torrent.Hash {
+	return pm.peer.InfoHash
+}
+
+func (pm *Manager) IsAlive() bool {
+	return pm.isAlive.Load()
 }

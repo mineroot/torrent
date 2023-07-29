@@ -1,0 +1,6 @@
+with-expecter: True
+
+packages:
+  github.com/mineroot/torrent/pkg/peer:
+    interfaces:
+      ContextDialer:

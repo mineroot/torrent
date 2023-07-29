@@ -22,6 +22,7 @@ type Managers struct {
 
 func (m *Managers) Load(hashable torrent.Hashable) *Manager {
 	manager, _ := m.syncMap.Load(hashable.GetHash())
+	// TODO panic if nil
 	return manager.(*Manager)
 }
 
