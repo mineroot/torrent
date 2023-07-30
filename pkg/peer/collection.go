@@ -8,20 +8,10 @@ import (
 
 type Managers []*Manager
 
-func (pms Managers) FindByInfoHashAndIp(infoHash torrent.Hash, ip net.IP) Managers {
-	foundPms := make(Managers, 0, 10)
+func (pms Managers) FindAliveByInfoHashAndIp(infoHash torrent.Hash, ip net.IP) Managers {
+	foundPms := make(Managers, 0)
 	for _, pm := range pms {
-		if pm.peer.InfoHash == infoHash && pm.peer.IP.Equal(ip) {
-			foundPms = append(foundPms, pm)
-		}
-	}
-	return foundPms
-}
-
-func (pms Managers) FindByInfoHash(infoHash torrent.Hash) Managers {
-	foundPms := make(Managers, 0, 100)
-	for _, pm := range pms {
-		if pm.peer.InfoHash == infoHash {
+		if pm.peer.InfoHash == infoHash && pm.peer.IP.Equal(ip) && pm.IsAlive() {
 			foundPms = append(foundPms, pm)
 		}
 	}

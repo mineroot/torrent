@@ -15,6 +15,11 @@ const IdSize = 20
 
 type ID [IdSize]byte
 
+// IDFromString panics if str isn't IdSize bytes long
+func IDFromString(str string) ID {
+	return ID([]byte(str))
+}
+
 func (id ID) PeerId() [IdSize]byte {
 	return id
 }

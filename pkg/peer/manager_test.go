@@ -39,12 +39,12 @@ func TestManager_Run(t *testing.T) {
 		assert.Error(t, err)
 		assert.False(t, seedingPm.IsAlive())
 	}()
-	// cancel ctx when downloaded
 	go func() {
 		downloaded := 0
 		for {
 			<-progress
 			downloaded++
+			// cancel ctx when downloaded
 			if downloaded == piecesCount {
 				cancel()
 				break
@@ -74,7 +74,7 @@ func createDownloadingManager(t *testing.T, conn net.Conn) (*Manager, afero.Fs, 
 	dms := download.CreateDownloadManagers(s)
 	progressPieces := make(chan *event.ProgressPieceDownloaded, 1)
 	return NewManager(
-			ID([]byte("-GO0001-randombytes1")),
+			IDFromString("-GO0001-randombytes1"),
 			dialer,
 			s,
 			Peer{InfoHash: torrentFile.InfoHash},
@@ -96,7 +96,7 @@ func createSeedingManager(t *testing.T, conn net.Conn) *Manager {
 	dialer := peer.NewMockContextDialer(t)
 	dms := download.CreateDownloadManagers(s)
 	return NewManager(
-		ID([]byte("-GO0001-randombytes2")),
+		IDFromString("-GO0001-randombytes2"),
 		dialer,
 		s,
 		Peer{Conn: conn},

@@ -16,6 +16,7 @@ import (
 	"github.com/mineroot/torrent/pkg/storage"
 	"github.com/mineroot/torrent/pkg/torrent"
 	"github.com/mineroot/torrent/pkg/tracker"
+	"github.com/mineroot/torrent/utils"
 )
 
 type Client struct {
@@ -47,7 +48,7 @@ func NewClient(id peer.ID, port uint16, storage *storage.Storage) *Client {
 
 func (c *Client) Run(ctx context.Context) (err error) {
 	defer c.storage.Close()
-	lis := listener.NewListenerFromContext(ctx)
+	lis := listener.New(log.Ctx(ctx))
 	c.connCh, err = lis.Listen(c.port)
 	if err != nil {
 		return fmt.Errorf("unable to start listener: %w", err)
@@ -56,18 +57,11 @@ func (c *Client) Run(ctx context.Context) (err error) {
 	c.dms = download.CreateDownloadManagers(c.storage)
 	c.sendInitialProgress()
 	g, ctx := errgroup.WithContext(ctx)
-	trackers := make([]*tracker.Tracker, 0, c.storage.Len())
 	for file := range c.storage.Iterator() {
-		t := tracker.New(file, c.id, c.port, c.peersCh)
-		trackers = append(trackers, t)
-		g.Go(func() error {
-			return t.Run(ctx)
-		})
+		g.Go(utils.WithCtx(ctx, tracker.New(file, c.id, c.port, c.peersCh).Run))
 	}
-	g.Go(func() error {
-		return c.managePeers(ctx)
-	})
-	go c.calculateDownloadSpeed(ctx)
+	g.Go(utils.WithCtx(ctx, c.managePeers))
+	go c.calculateDownloadSpeed(ctx) // todo ugly?
 	return g.Wait()
 }
 
@@ -108,22 +102,18 @@ func (c *Client) managePeers(ctx context.Context) error {
 			c.pmsLock.Lock()
 			c.pms = append(c.pms, pm)
 			c.pmsLock.Unlock()
-			g.Go(func() error {
-				return pm.Run(ctx)
-			})
+			g.Go(utils.WithCtx(ctx, pm.Run))
 		case peers, ok := <-c.peersCh:
 			if !ok {
 				return nil
 			}
 			c.pmsLock.Lock()
 			for _, p := range peers {
-				foundPms := c.pms.FindByInfoHashAndIp(p.InfoHash, p.IP)
+				foundPms := c.pms.FindAliveByInfoHashAndIp(p.InfoHash, p.IP)
 				if len(foundPms) == 0 {
 					pm := peer.NewManager(c.id, &net.Dialer{}, c.storage, p, c.dms, c.progressConnReads, c.progressPieces)
 					c.pms = append(c.pms, pm)
-					g.Go(func() error {
-						return pm.Run(ctx)
-					})
+					g.Go(utils.WithCtx(ctx, pm.Run))
 				}
 			}
 			c.pmsLock.Unlock()

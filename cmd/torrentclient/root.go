@@ -83,7 +83,7 @@ func run(*cobra.Command, []string) error {
 		}
 	}
 
-	client := pkg.NewClient(peer.ID([]byte("-GO0001-random_bytes")), listenPort, s)
+	client := pkg.NewClient(peer.IDFromString("-GO0001-random_bytes"), listenPort, s)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ctx = l.WithContext(ctx)

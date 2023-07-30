@@ -73,5 +73,5 @@ func createClient(t *testing.T, port uint16, downloadDir, peerId string) *Client
 	s := storage.NewStorage(afero.NewOsFs())
 	err = s.Set(torrentFile)
 	require.NoError(t, err)
-	return NewClient(peer.ID([]byte(peerId)), port, s)
+	return NewClient(peer.IDFromString(peerId), port, s)
 }

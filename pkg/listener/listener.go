@@ -1,38 +1,53 @@
 package listener
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 	"net"
+	"sync"
 )
 
-func NewListenerFromContext(ctx context.Context) *Listener {
+var errAlreadyListened = fmt.Errorf("already listened")
+var errNothingToClose = fmt.Errorf("nothing to close")
+
+func New(logger *zerolog.Logger) *Listener {
+	if logger == nil {
+		nop := zerolog.Nop()
+		logger = &nop
+	}
 	return &Listener{
-		logger: log.Ctx(ctx),
+		logger: logger,
 		connCh: make(chan net.Conn),
 		done:   make(chan struct{}),
 	}
 }
 
 type Listener struct {
-	net.Listener
+	once   sync.Once
+	lis    net.Listener
 	logger *zerolog.Logger
 	connCh chan net.Conn
 	done   chan struct{}
 }
 
-func (l *Listener) Listen(port uint16) (<-chan net.Conn, error) {
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+func (l *Listener) Listen(port uint16) (connCh <-chan net.Conn, err error) {
+	err = errAlreadyListened
+	l.once.Do(func() {
+		connCh, err = l.listen(port)
+	})
+	return
+}
+
+func (l *Listener) listen(port uint16) (<-chan net.Conn, error) {
+	var err error
+	l.lis, err = net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
 		return nil, fmt.Errorf("unable to listen port %d: %w", port, err)
 	}
-	l.Listener = listener
 	go func() {
 		for {
-			conn, err := listener.Accept()
+			conn, err := l.lis.Accept()
 			if err != nil {
 				if errors.Is(err, net.ErrClosed) {
 					close(l.done)
@@ -50,13 +65,16 @@ func (l *Listener) Listen(port uint16) (<-chan net.Conn, error) {
 			l.connCh <- conn
 		}
 	}()
-
 	return l.connCh, nil
 }
 
 func (l *Listener) Close() error {
-	err := l.Listener.Close()
+	if l.lis == nil {
+		return errNothingToClose
+	}
+	err := l.lis.Close()
 	<-l.done
 	close(l.connCh)
+	l.lis = nil
 	return err
 }

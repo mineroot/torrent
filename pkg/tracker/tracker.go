@@ -107,9 +107,7 @@ func (t *Tracker) trackerRequest(ctx context.Context, event event) (*response, e
 }
 
 func (t *Tracker) exit() {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	_, _ = t.trackerRequest(ctx, stopped)
+	_, _ = t.trackerRequest(context.Background(), stopped)
 }
 
 func (t *Tracker) buildTrackerURL(event event) (string, error) {

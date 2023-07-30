@@ -28,18 +28,14 @@ const (
 )
 
 type Manager struct {
-	once              *sync.Once
+	*managerState
+	once              sync.Once
 	clientId          ID
 	dialer            ContextDialer
 	storage           storage.Reader
 	peer              Peer
-	isAlive           atomic.Bool
 	incomeMessagesCh  chan *Message
 	outcomeMessageCh  chan *Message
-	amChoking         atomic.Bool
-	amInterested      atomic.Bool
-	peerChoking       atomic.Bool
-	peerInterested    atomic.Bool
 	bitfieldReceived  chan struct{}
 	peerBitfield      *bitfield.Bitfield
 	myBitfield        *bitfield.Bitfield
@@ -63,11 +59,11 @@ func NewManager(
 	progressPieces chan<- *event.ProgressPieceDownloaded,
 ) *Manager {
 	pm := &Manager{
-		once:              new(sync.Once),
 		clientId:          clientId,
 		dialer:            dialer,
 		storage:           storage,
 		peer:              peer,
+		managerState:      newManagerState(),
 		incomeMessagesCh:  make(chan *Message, 512),
 		outcomeMessageCh:  make(chan *Message, 512),
 		bitfieldReceived:  make(chan struct{}),
@@ -76,23 +72,16 @@ func NewManager(
 		progressPieces:    progressPieces,
 		requestedBlocks:   download.NewBlocksSyncMap(),
 	}
-	pm.isAlive.Store(true)
-	pm.amChoking.Store(true)
-	pm.peerChoking.Store(true)
 	return pm
 }
 
 func (pm *Manager) Run(ctx context.Context) (err error) {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	pm.once.Do(func() {
+		defer pm.isAlive.Store(false)
 		pm.setLoggerFromCtx(ctx)
 		err = pm.run(ctx)
-		pm.isAlive.Store(false)
-	})
-	if err != nil {
 		pm.log.Error().Err(err).Msg("peer manager is dying...")
-	}
+	})
 	return
 }
 
@@ -129,18 +118,10 @@ func (pm *Manager) run(ctx context.Context) (err error) {
 	time.Sleep(time.Second)
 	_ = pm.sendMessage(ctx, NewInterested())
 
-	g.Go(func() error {
-		return pm.readMessages()
-	})
-	g.Go(func() error {
-		return pm.writeMessages(ctx)
-	})
-	g.Go(func() error {
-		return pm.handleMessages(ctx)
-	})
-	g.Go(func() error {
-		return pm.download(ctx)
-	})
+	g.Go(pm.readMessages)
+	g.Go(utils.WithCtx(ctx, pm.writeMessages))
+	g.Go(utils.WithCtx(ctx, pm.handleMessages))
+	g.Go(utils.WithCtx(ctx, pm.download))
 	return g.Wait()
 }
 
@@ -325,4 +306,20 @@ func (pm *Manager) GetHash() torrent.Hash {
 
 func (pm *Manager) IsAlive() bool {
 	return pm.isAlive.Load()
+}
+
+type managerState struct {
+	isAlive        atomic.Bool
+	amChoking      atomic.Bool
+	amInterested   atomic.Bool
+	peerChoking    atomic.Bool
+	peerInterested atomic.Bool
+}
+
+func newManagerState() *managerState {
+	state := &managerState{}
+	state.isAlive.Store(true)
+	state.amChoking.Store(true)
+	state.peerChoking.Store(true)
+	return state
 }

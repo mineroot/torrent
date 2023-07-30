@@ -68,17 +68,6 @@ func NewRequest(pieceIndex, begin, length uint32) *Message { // todo make block 
 	}
 }
 
-func NewCancel(pieceIndex, begin, length uint32) *Message { // todo make block as parameter
-	buf := make([]byte, 12)
-	binary.BigEndian.PutUint32(buf[:4], pieceIndex)
-	binary.BigEndian.PutUint32(buf[4:8], begin)
-	binary.BigEndian.PutUint32(buf[8:12], length)
-	return &Message{
-		ID:      msgCancel,
-		Payload: buf,
-	}
-}
-
 func NewPiece(pieceIndex, begin uint32, data []byte) *Message {
 	buf := make([]byte, 8)
 	binary.BigEndian.PutUint32(buf[:4], pieceIndex)
@@ -86,6 +75,17 @@ func NewPiece(pieceIndex, begin uint32, data []byte) *Message {
 	buf = append(buf, data...)
 	return &Message{
 		ID:      msgPiece,
+		Payload: buf,
+	}
+}
+
+func NewCancel(pieceIndex, begin, length uint32) *Message { // todo make block as parameter
+	buf := make([]byte, 12)
+	binary.BigEndian.PutUint32(buf[:4], pieceIndex)
+	binary.BigEndian.PutUint32(buf[4:8], begin)
+	binary.BigEndian.PutUint32(buf[8:12], length)
+	return &Message{
+		ID:      msgCancel,
 		Payload: buf,
 	}
 }
