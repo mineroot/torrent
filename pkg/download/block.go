@@ -11,6 +11,10 @@ type Block struct {
 	Len        int
 }
 
+func NewBlock(pieceIndex int, begin int, len int) Block {
+	return Block{PieceIndex: pieceIndex, Begin: begin, Len: len}
+}
+
 type BlocksMap map[Block]struct{}
 
 func (m BlocksMap) Add(block Block) {

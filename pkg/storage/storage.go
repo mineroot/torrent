@@ -177,7 +177,9 @@ func calculateBitfield(r io.ReaderAt, hashes []torrent.Hash, pieceLen int) (*bit
 					return err
 				}
 				if ok {
-					bf.Set(pieceIndex)
+					if err = bf.Set(pieceIndex); err != nil {
+						panic(fmt.Errorf("storage: %w", err))
+					}
 				}
 			}
 			return nil

@@ -1,77 +1,83 @@
 package peer
 
 import (
-	"context"
 	"encoding/binary"
+
 	"github.com/mineroot/torrent/pkg/bitfield"
 	"github.com/mineroot/torrent/pkg/download"
 	"github.com/mineroot/torrent/pkg/event"
 	"github.com/mineroot/torrent/utils"
 )
 
-type messageHandler func(context.Context, *Manager, *Message) error
+type messageHandler func(*Manager, *Message) error
 
 var messageHandlers = map[messageId]messageHandler{
 	msgChoke:         msgChokeHandler,
 	msgUnChoke:       msgUnChokeHandler,
 	msgInterested:    msgInterestedHandler,
 	msgNotInterested: msgNotInterestedHandler,
-	msgHave:          noopHandler, // TODO
+	msgHave:          msgHaveHandler,
 	msgBitfield:      msgBitfieldHandler,
 	msgRequest:       msgRequestHandler,
 	msgPiece:         msgPieceHandler,
-	msgCancel:        noopHandler, // TODO
+	msgCancel:        msgCancelHandler,
 	msgPort:          noopHandler,
 }
 
-func msgChokeHandler(_ context.Context, pm *Manager, _ *Message) error {
+func msgChokeHandler(pm *Manager, _ *Message) error {
 	pm.amChoking.Store(true)
 	return nil
 }
 
-func msgUnChokeHandler(_ context.Context, pm *Manager, _ *Message) error {
+func msgUnChokeHandler(pm *Manager, _ *Message) error {
 	pm.amChoking.Store(false)
 	return nil
 }
 
-func msgInterestedHandler(_ context.Context, pm *Manager, _ *Message) error {
+func msgInterestedHandler(pm *Manager, _ *Message) error {
 	pm.peerInterested.Store(true)
 	return nil
 }
 
-func msgNotInterestedHandler(_ context.Context, pm *Manager, _ *Message) error {
+func msgNotInterestedHandler(pm *Manager, _ *Message) error {
 	pm.peerInterested.Store(false)
 	return nil
 }
 
-func msgBitfieldHandler(_ context.Context, pm *Manager, message *Message) error {
-	bf, err := bitfield.FromPayload(message.Payload, pm.torrent.PiecesCount())
-	if err != nil {
-		return err
-	}
-	pm.peerBitfield = bf
-	pm.bitfieldReceived <- struct{}{}
+func msgHaveHandler(pm *Manager, message *Message) error {
+	index := binary.BigEndian.Uint32(message.Payload[:4])
+	// ignoring if peer sent the wrong piece index
+	_ = pm.peerBitfield.Set(int(index))
 	return nil
 }
 
-func msgRequestHandler(ctx context.Context, pm *Manager, message *Message) error {
+func msgBitfieldHandler(pm *Manager, message *Message) error {
+	var err error
+	pm.bitfieldReceivedOnce.Do(func() {
+		var bf *bitfield.Bitfield
+		bf, err = bitfield.FromPayload(message.Payload, pm.torrent.PiecesCount())
+		if err != nil {
+			return
+		}
+		pm.peerBitfield = bf
+		close(pm.bitfieldReceived)
+	})
+	return err
+}
+
+func msgRequestHandler(pm *Manager, message *Message) error {
+	pm.firstRequestReceivedOnce.Do(func() {
+		close(pm.firstRequestReceived)
+	})
 	index := binary.BigEndian.Uint32(message.Payload[:4])
 	begin := binary.BigEndian.Uint32(message.Payload[4:8])
 	length := binary.BigEndian.Uint32(message.Payload[8:12])
-	offset := int(index)*pm.torrent.PieceLength + int(begin)
-	if offset+int(length) > pm.torrent.Length {
-		length = uint32(pm.torrent.Length - offset)
-	}
-	buf := make([]byte, length)
-	_, err := pm.file.ReadAt(buf, int64(offset))
-	if err != nil {
-		return err
-	}
-	_ = pm.sendMessage(ctx, NewPiece(index, begin, buf))
+	block := download.NewBlock(int(index), int(begin), int(length))
+	pm.peerRequestedBlocks.Add(block)
 	return nil
 }
 
-func msgPieceHandler(_ context.Context, pm *Manager, message *Message) error {
+func msgPieceHandler(pm *Manager, message *Message) error {
 	index := int(binary.BigEndian.Uint32(message.Payload[:4]))
 	// discard block if we already have its piece
 	if pm.myBitfield.Has(index) {
@@ -85,17 +91,13 @@ func msgPieceHandler(_ context.Context, pm *Manager, message *Message) error {
 		return err
 	}
 
-	block := download.Block{
-		PieceIndex: index,
-		Begin:      int(begin),
-		Len:        len(data),
-	}
-	isVerified, err := pm.dm.MarkAsDownloaded(block, pm.file, pm.torrent.PieceHashes[index], pm.torrent.PieceLength)
+	block := download.NewBlock(index, int(begin), len(data))
+	isVerified, err := pm.bg.MarkAsDownloaded(block, pm.file, pm.torrent.PieceHashes[index], pm.torrent.PieceLength)
 	if err != nil {
 		return err
 	}
 	// delete block from requested after receiving it
-	pm.requestedBlocks.Delete(block)
+	pm.myRequestedBlocks.Delete(block)
 	if isVerified {
 		pm.progressPieces <- event.NewProgressPieceDownloaded(pm.torrent.InfoHash, pm.myBitfield.DownloadedPiecesCount())
 	}
@@ -103,6 +105,15 @@ func msgPieceHandler(_ context.Context, pm *Manager, message *Message) error {
 	return nil
 }
 
-func noopHandler(context.Context, *Manager, *Message) error {
+func msgCancelHandler(pm *Manager, message *Message) error {
+	index := binary.BigEndian.Uint32(message.Payload[:4])
+	begin := binary.BigEndian.Uint32(message.Payload[4:8])
+	length := binary.BigEndian.Uint32(message.Payload[8:12])
+	block := download.NewBlock(int(index), int(begin), int(length))
+	pm.peerRequestedBlocks.Delete(block)
+	return nil
+}
+
+func noopHandler(*Manager, *Message) error {
 	return nil
 }

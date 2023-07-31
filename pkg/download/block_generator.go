@@ -16,27 +16,30 @@ const BlockSize = 1 << 14 // 16kB
 
 var ErrNoMoreBlocks = fmt.Errorf("no more blocks")
 
-type Managers struct {
+type BlockGenerators struct {
 	syncMap sync.Map
 }
 
-func (m *Managers) Load(hashable torrent.Hashable) *Manager {
-	manager, _ := m.syncMap.Load(hashable.GetHash())
-	//TODO panic if nil
-	return manager.(*Manager)
+func (m *BlockGenerators) Load(hashable torrent.Hashable) *BlockGenerator {
+	blockGenerator, ok := m.syncMap.Load(hashable.GetHash())
+	if !ok {
+		// TODO: maybe panic?
+		return nil
+	}
+	return blockGenerator.(*BlockGenerator)
 }
 
-func CreateDownloadManagers(storage storage.Reader) *Managers {
-	managers := &Managers{}
+func CreateBlockGenerators(storage storage.Reader) *BlockGenerators {
+	blockGenerators := &BlockGenerators{}
 	for t := range storage.Iterator() {
 		bf := storage.GetBitfield(t.InfoHash)
 		blocks := divide.Divide(t.Length, []int{t.PieceLength, BlockSize})
-		managers.syncMap.Store(t.InfoHash, newManager(blocks, bf))
+		blockGenerators.syncMap.Store(t.InfoHash, newBlockGenerator(blocks, bf))
 	}
-	return managers
+	return blockGenerators
 }
 
-type Manager struct {
+type BlockGenerator struct {
 	bitfield      *bitfield.Bitfield
 	blocksByPiece map[int]BlocksMap
 	blocksQ       chan Block
@@ -45,7 +48,7 @@ type Manager struct {
 	downloadedBlocks BlocksMap
 }
 
-func newManager(items <-chan divide.Item, bitfield *bitfield.Bitfield) *Manager {
+func newBlockGenerator(items <-chan divide.Item, bitfield *bitfield.Bitfield) *BlockGenerator {
 	blocksByPiece := make(map[int]BlocksMap, bitfield.PiecesCount())
 	blocksCount := 0
 	for item := range items {
@@ -55,11 +58,7 @@ func newManager(items <-chan divide.Item, bitfield *bitfield.Bitfield) *Manager 
 				blocks = make(BlocksMap)
 				blocksByPiece[item.ParentIndex] = blocks
 			}
-			blocks.Add(Block{
-				PieceIndex: item.ParentIndex,
-				Begin:      item.Begin,
-				Len:        item.Len,
-			})
+			blocks.Add(NewBlock(item.ParentIndex, item.Begin, item.Len))
 			blocksCount++
 		}
 	}
@@ -73,7 +72,7 @@ func newManager(items <-chan divide.Item, bitfield *bitfield.Bitfield) *Manager 
 	if cap(blocksQ) == 0 {
 		close(blocksQ)
 	}
-	return &Manager{
+	return &BlockGenerator{
 		bitfield:         bitfield,
 		blocksByPiece:    blocksByPiece,
 		blocksQ:          blocksQ,
@@ -81,7 +80,7 @@ func newManager(items <-chan divide.Item, bitfield *bitfield.Bitfield) *Manager 
 	}
 }
 
-func (m *Manager) GenerateBlock(ctx context.Context) (Block, error) {
+func (m *BlockGenerator) Generate(ctx context.Context) (Block, error) {
 	m.lock.RLock()
 	defer m.lock.RUnlock()
 	for {
@@ -103,7 +102,7 @@ func (m *Manager) GenerateBlock(ctx context.Context) (Block, error) {
 	}
 }
 
-func (m *Manager) MarkAsDownloaded(
+func (m *BlockGenerator) MarkAsDownloaded(
 	block Block,
 	r io.ReaderAt,
 	hash torrent.Hash,
@@ -151,14 +150,17 @@ func (m *Manager) MarkAsDownloaded(
 		m.downloadedBlocks.Add(block)
 	}
 
-	m.bitfield.Set(block.PieceIndex)
+	if err = m.bitfield.Set(block.PieceIndex); err != nil {
+		panic(fmt.Errorf("download: %w", err))
+	}
+
 	if m.bitfield.IsCompleted() {
 		close(m.blocksQ)
 	}
 	return
 }
 
-func (m *Manager) hasBlock(block Block) bool {
+func (m *BlockGenerator) hasBlock(block Block) bool {
 	blocks, ok := m.blocksByPiece[block.PieceIndex]
 	if !ok {
 		return false

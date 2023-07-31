@@ -61,17 +61,20 @@ func TestBitfield_IsCompleted(t *testing.T) {
 	piecesCount := 71
 	bf := New(piecesCount)
 	assert.False(t, bf.IsCompleted())
-	bf.Set(1)
+	err := bf.Set(1)
+	assert.NoError(t, err)
 	assert.False(t, bf.IsCompleted())
 	for i := 0; i < piecesCount; i++ {
-		bf.Set(i)
+		err = bf.Set(i)
+		assert.NoError(t, err)
 	}
 	assert.True(t, bf.IsCompleted())
 
 	piecesCount = 8
 	bf = New(piecesCount)
 	for i := 0; i < piecesCount; i++ {
-		bf.Set(i)
+		err = bf.Set(i)
+		assert.NoError(t, err)
 	}
 	assert.True(t, bf.IsCompleted())
 }
@@ -79,15 +82,18 @@ func TestBitfield_IsCompleted(t *testing.T) {
 func TestBitfield_SetPiece(t *testing.T) {
 	piecesCount := 7
 	bf := New(piecesCount)
-	bf.Set(0)
+	err := bf.Set(0)
+	assert.NoError(t, err)
 	assert.Equal(t, byte(0b10000000), bf.bitfield[0])
-	bf.Set(2)
+	err = bf.Set(2)
+	assert.NoError(t, err)
 	assert.Equal(t, byte(0b10100000), bf.bitfield[0])
-	bf.Set(6)
+	err = bf.Set(6)
+	assert.NoError(t, err)
 	assert.Equal(t, byte(0b10100010), bf.bitfield[0])
-	assert.Panics(t, func() {
-		bf.Set(7)
-	})
+
+	err = bf.Set(7)
+	assert.Error(t, err)
 }
 
 func TestBitfield_Has(t *testing.T) {

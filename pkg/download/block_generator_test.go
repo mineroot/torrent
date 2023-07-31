@@ -23,13 +23,13 @@ const (
 	piecesCount = totalSize / pieceSize
 )
 
-func TestManager(t *testing.T) {
+func TestBlockGenerator(t *testing.T) {
 	reader, hashes := setup()
 
 	items := divide.Divide(totalSize, []int{pieceSize, BlockSize})
 	bf := bitfield.New(piecesCount)
 	assert.False(t, bf.IsCompleted())
-	m := newManager(items, bf)
+	bg := newBlockGenerator(items, bf)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -41,7 +41,7 @@ func TestManager(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for {
-				block, err := m.GenerateBlock(ctx)
+				block, err := bg.Generate(ctx)
 				if err != nil {
 					require.ErrorIs(t, err, ErrNoMoreBlocks)
 					return
@@ -62,13 +62,9 @@ func TestManager(t *testing.T) {
 				if !ok {
 					return
 				}
-				block := Block{
-					PieceIndex: item.ParentIndex,
-					Begin:      item.Begin,
-					Len:        item.Len,
-				}
+				block := NewBlock(item.ParentIndex, item.Begin, item.Len)
 
-				pieceVerified, err := m.MarkAsDownloaded(block, reader, hashes[block.PieceIndex], pieceSize)
+				pieceVerified, err := bg.MarkAsDownloaded(block, reader, hashes[block.PieceIndex], pieceSize)
 				require.NoError(t, err)
 				if pieceVerified {
 					assert.True(t, bf.Has(block.PieceIndex))
@@ -91,4 +87,33 @@ func setup() (io.ReaderAt, []torrent.Hash) {
 		hashes = append(hashes, sha1.Sum(buf[from:to]))
 	}
 	return bytes.NewReader(buf), hashes
+}
+
+func TestBlockGenerators_Load(t *testing.T) {
+	items := divide.Divide(totalSize, []int{pieceSize, BlockSize})
+	bf := bitfield.New(piecesCount)
+	assert.False(t, bf.IsCompleted())
+	bg1 := newBlockGenerator(items, bf)
+	bg2 := newBlockGenerator(items, bf)
+
+	hashable1 := hashable{hash: torrent.Hash{1}}
+	hashable2 := hashable{hash: torrent.Hash{2}}
+	hashable3 := hashable{hash: torrent.Hash{3}}
+
+	bgs := &BlockGenerators{}
+	bgs.syncMap.Store(hashable1.hash, bg1)
+	bgs.syncMap.Store(hashable2.hash, bg2)
+
+	assert.Equal(t, bg1, bgs.Load(hashable1))
+	assert.Equal(t, bg2, bgs.Load(hashable2))
+	assert.NotEqual(t, bg1, bgs.Load(hashable2))
+	assert.Nil(t, bgs.Load(hashable3))
+}
+
+type hashable struct {
+	hash torrent.Hash
+}
+
+func (h hashable) GetHash() torrent.Hash {
+	return h.hash
 }

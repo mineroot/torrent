@@ -101,7 +101,8 @@ func createPartiallyDownloadedFile(t *testing.T, fs afero.Fs, tFile *torrent.Fil
 		// we need to copy the last piece anyway because downloadedFileD size may not be the same as originalFile
 		isLastPiece := i == tFile.PiecesCount()-1
 		if toCopy || isLastPiece {
-			bf.Set(i)
+			err = bf.Set(i)
+			assert.NoError(t, err)
 			from := i * tFile.PieceLength
 			to := from + tFile.PieceLength
 			if isLastPiece {
@@ -128,7 +129,8 @@ func createFullyDownloadedFile(t *testing.T, fs afero.Fs, tFile *torrent.File) *
 	require.NoError(t, err)
 	bf := bitfield.New(tFile.PiecesCount())
 	for i := 0; i < tFile.PiecesCount(); i++ {
-		bf.Set(i)
+		err = bf.Set(i)
+		assert.NoError(t, err)
 	}
 	return bf
 }

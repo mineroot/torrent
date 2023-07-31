@@ -29,24 +29,28 @@ const (
 
 type Manager struct {
 	*managerState
-	once              sync.Once
-	clientId          ID
-	dialer            ContextDialer
-	storage           storage.Reader
-	peer              Peer
-	incomeMessagesCh  chan *Message
-	outcomeMessageCh  chan *Message
-	bitfieldReceived  chan struct{}
-	peerBitfield      *bitfield.Bitfield
-	myBitfield        *bitfield.Bitfield
-	log               zerolog.Logger
-	torrent           *torrent.File
-	dms               *download.Managers
-	dm                *download.Manager
-	file              afero.File
-	progressConnReads chan<- *event.ProgressConnRead
-	progressPieces    chan<- *event.ProgressPieceDownloaded
-	requestedBlocks   *download.BlocksSyncMap
+	once                     sync.Once
+	clientId                 ID
+	dialer                   ContextDialer
+	storage                  storage.Reader
+	peer                     Peer
+	incomeMessagesCh         chan *Message
+	outcomeMessageCh         chan *Message
+	bitfieldReceivedOnce     sync.Once
+	bitfieldReceived         chan struct{}
+	firstRequestReceivedOnce sync.Once
+	firstRequestReceived     chan struct{}
+	peerBitfield             *bitfield.Bitfield
+	myBitfield               *bitfield.Bitfield
+	log                      zerolog.Logger
+	torrent                  *torrent.File
+	bgs                      *download.BlockGenerators
+	bg                       *download.BlockGenerator
+	file                     afero.File
+	progressConnReads        chan<- *event.ProgressConnRead
+	progressPieces           chan<- *event.ProgressPieceDownloaded
+	myRequestedBlocks        *download.BlocksSyncMap
+	peerRequestedBlocks      *download.BlocksSyncMap
 }
 
 func NewManager(
@@ -54,23 +58,25 @@ func NewManager(
 	dialer ContextDialer,
 	storage storage.Reader,
 	peer Peer,
-	dms *download.Managers,
+	bgs *download.BlockGenerators,
 	progressConnReads chan<- *event.ProgressConnRead,
 	progressPieces chan<- *event.ProgressPieceDownloaded,
 ) *Manager {
 	pm := &Manager{
-		clientId:          clientId,
-		dialer:            dialer,
-		storage:           storage,
-		peer:              peer,
-		managerState:      newManagerState(),
-		incomeMessagesCh:  make(chan *Message, 512),
-		outcomeMessageCh:  make(chan *Message, 512),
-		bitfieldReceived:  make(chan struct{}),
-		dms:               dms,
-		progressConnReads: progressConnReads,
-		progressPieces:    progressPieces,
-		requestedBlocks:   download.NewBlocksSyncMap(),
+		clientId:             clientId,
+		dialer:               dialer,
+		storage:              storage,
+		peer:                 peer,
+		managerState:         newManagerState(),
+		incomeMessagesCh:     make(chan *Message, 512),
+		outcomeMessageCh:     make(chan *Message, 512),
+		bitfieldReceived:     make(chan struct{}),
+		firstRequestReceived: make(chan struct{}),
+		bgs:                  bgs,
+		progressConnReads:    progressConnReads,
+		progressPieces:       progressPieces,
+		myRequestedBlocks:    download.NewBlocksSyncMap(),
+		peerRequestedBlocks:  download.NewBlocksSyncMap(),
 	}
 	return pm
 }
@@ -109,7 +115,7 @@ func (pm *Manager) run(ctx context.Context) (err error) {
 	pm.log.Info().Msg("successful handshake")
 
 	pm.file = pm.storage.GetFile(pm.peer.InfoHash)
-	pm.dm = pm.dms.Load(pm)
+	pm.bg = pm.bgs.Load(pm)
 	pm.myBitfield = pm.storage.GetBitfield(pm.peer.InfoHash)
 
 	// todo send this synchronous
@@ -119,9 +125,10 @@ func (pm *Manager) run(ctx context.Context) (err error) {
 	_ = pm.sendMessage(ctx, NewInterested())
 
 	g.Go(pm.readMessages)
-	g.Go(utils.WithCtx(ctx, pm.writeMessages))
-	g.Go(utils.WithCtx(ctx, pm.handleMessages))
-	g.Go(utils.WithCtx(ctx, pm.download))
+	g.Go(utils.WithContext(ctx, pm.writeMessages))
+	g.Go(utils.WithContext(ctx, pm.handleMessages))
+	g.Go(utils.WithContext(ctx, pm.download))
+	g.Go(utils.WithContext(ctx, pm.upload))
 	return g.Wait()
 }
 
@@ -226,11 +233,11 @@ func (pm *Manager) download(ctx context.Context) error {
 			if i >= blocksToRequest {
 				break
 			}
-			block, err := pm.dm.GenerateBlock(ctx)
+			block, err := pm.bg.Generate(ctx)
 			if errors.Is(err, download.ErrNoMoreBlocks) {
-				pm.log.Info().Int("requested_messages_left", pm.requestedBlocks.Len()).Msg("download completed")
-				for block := range pm.requestedBlocks.Iterate() {
-					message := NewCancel(uint32(block.PieceIndex), uint32(block.Begin), uint32(block.Len))
+				pm.log.Info().Int("requested_messages_left", pm.myRequestedBlocks.Len()).Msg("download completed")
+				for block := range pm.myRequestedBlocks.Iterate() {
+					message := NewCancel(block)
 					_ = pm.sendMessage(ctx, message)
 				}
 				return nil
@@ -238,22 +245,22 @@ func (pm *Manager) download(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			if !pm.myBitfield.Has(block.PieceIndex) && pm.peerBitfield.Has(block.PieceIndex) && !pm.requestedBlocks.Has(block) {
-				// if we don't have a piece and remote peer has a piece
+			if !pm.myBitfield.Has(block.PieceIndex) && pm.peerBitfield.Has(block.PieceIndex) && !pm.myRequestedBlocks.Has(block) {
+				// if we don't have a piece but remote peer has a piece
 				// and we not just yet requested block, then request block
-				message := NewRequest(uint32(block.PieceIndex), uint32(block.Begin), uint32(block.Len))
+				message := NewRequest(block)
 				if err = pm.sendMessage(ctx, message); err != nil {
 					break
 				}
 				// add block to map for tracking requested blocks
-				pm.requestedBlocks.Add(block)
+				pm.myRequestedBlocks.Add(block)
 				i++
 			}
 		}
 		// wait 1 sec
 		<-ticker.C
 		// if a block isn't received in 5 seconds, we assume it never will be received
-		remainingRequests := pm.requestedBlocks.LenNonExpired(5 * time.Second)
+		remainingRequests := pm.myRequestedBlocks.LenNonExpired(5 * time.Second)
 		// adjust growFactor based on non-expired blocks count
 		if remainingRequests > 0 {
 			growFactor--
@@ -266,11 +273,50 @@ func (pm *Manager) download(ctx context.Context) error {
 	}
 }
 
-func (pm *Manager) handleMessages(ctx context.Context) error {
+func (pm *Manager) upload(ctx context.Context) error {
+	// wait for the first 'request' message from peer
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-pm.firstRequestReceived:
+	}
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-ticker.C:
+			for block := range pm.peerRequestedBlocks.Iterate() {
+				// if block's request was canceled by peer
+				if !pm.peerRequestedBlocks.Has(block) {
+					continue
+				}
+				offset := block.PieceIndex*pm.torrent.PieceLength + block.Begin
+				if offset+block.Len > pm.torrent.Length {
+					block.Len = pm.torrent.Length - offset
+				}
+				buf := make([]byte, block.Len)
+				_, err := pm.file.ReadAt(buf, int64(offset))
+				if err != nil {
+					return err
+				}
+				if err = pm.sendMessage(ctx, NewPiece(block, buf)); err != nil {
+					continue
+				}
+				pm.peerRequestedBlocks.Delete(block)
+			}
+		}
+	}
+}
+
+func (pm *Manager) handleMessages(ctx context.Context) error {
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	for {
+		select {
+		case <-ctx.Done():
+			return context.Cause(ctx)
 		case message, ok := <-pm.incomeMessagesCh:
 			if !ok {
 				return nil
@@ -284,9 +330,11 @@ func (pm *Manager) handleMessages(ctx context.Context) error {
 				pm.log.Warn().Int("message_id", int(message.ID)).Bytes("payload", message.Payload).Msg("unknown message id")
 				break
 			}
-			if err := handler(ctx, pm, message); err != nil {
-				return nil
+			//go func() { // TODO: fucking data race in afero
+			if err := handler(pm, message); err != nil {
+				cancel(err)
 			}
+			//}()
 		}
 	}
 }

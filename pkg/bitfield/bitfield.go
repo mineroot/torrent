@@ -92,16 +92,16 @@ func (bf *Bitfield) IsCompleted() bool {
 	return bytes.Equal(bf.bitfield, bf.completedBitfield)
 }
 
-func (bf *Bitfield) Set(pieceIndex int) {
+func (bf *Bitfield) Set(pieceIndex int) error {
 	bf.lock.Lock()
 	defer bf.lock.Unlock()
 	byteIndex := pieceIndex / bits
 	if pieceIndex >= bf.piecesCount {
-		panic(fmt.Errorf("pieceIndex is out of range [0, %d)", bf.piecesCount))
+		return fmt.Errorf("pieceIndex is out of range [0, %d)", bf.piecesCount)
 	}
 	bitIndex := pieceIndex % bits
 	bf.bitfield[byteIndex] |= 1 << (7 - bitIndex)
-	return
+	return nil
 }
 
 func (bf *Bitfield) Has(pieceIndex int) bool {

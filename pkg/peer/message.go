@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 
 	"github.com/mineroot/torrent/pkg/bitfield"
+	"github.com/mineroot/torrent/pkg/download"
 )
 
 type messageId int
@@ -57,21 +58,21 @@ func NewBitfield(bf *bitfield.Bitfield) *Message {
 	}
 }
 
-func NewRequest(pieceIndex, begin, length uint32) *Message { // todo make block as parameter
+func NewRequest(block download.Block) *Message {
 	buf := make([]byte, 12)
-	binary.BigEndian.PutUint32(buf[:4], pieceIndex)
-	binary.BigEndian.PutUint32(buf[4:8], begin)
-	binary.BigEndian.PutUint32(buf[8:12], length)
+	binary.BigEndian.PutUint32(buf[:4], uint32(block.PieceIndex))
+	binary.BigEndian.PutUint32(buf[4:8], uint32(block.Begin))
+	binary.BigEndian.PutUint32(buf[8:12], uint32(block.Len))
 	return &Message{
 		ID:      msgRequest,
 		Payload: buf,
 	}
 }
 
-func NewPiece(pieceIndex, begin uint32, data []byte) *Message {
+func NewPiece(block download.Block, data []byte) *Message {
 	buf := make([]byte, 8)
-	binary.BigEndian.PutUint32(buf[:4], pieceIndex)
-	binary.BigEndian.PutUint32(buf[4:8], begin)
+	binary.BigEndian.PutUint32(buf[:4], uint32(block.PieceIndex))
+	binary.BigEndian.PutUint32(buf[4:8], uint32(block.Begin))
 	buf = append(buf, data...)
 	return &Message{
 		ID:      msgPiece,
@@ -79,11 +80,11 @@ func NewPiece(pieceIndex, begin uint32, data []byte) *Message {
 	}
 }
 
-func NewCancel(pieceIndex, begin, length uint32) *Message { // todo make block as parameter
+func NewCancel(block download.Block) *Message {
 	buf := make([]byte, 12)
-	binary.BigEndian.PutUint32(buf[:4], pieceIndex)
-	binary.BigEndian.PutUint32(buf[4:8], begin)
-	binary.BigEndian.PutUint32(buf[8:12], length)
+	binary.BigEndian.PutUint32(buf[:4], uint32(block.PieceIndex))
+	binary.BigEndian.PutUint32(buf[4:8], uint32(block.Begin))
+	binary.BigEndian.PutUint32(buf[8:12], uint32(block.Len))
 	return &Message{
 		ID:      msgCancel,
 		Payload: buf,

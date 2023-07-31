@@ -71,14 +71,14 @@ func createDownloadingManager(t *testing.T, conn net.Conn) (*Manager, afero.Fs, 
 
 	dialer := peer.NewMockContextDialer(t)
 	dialer.EXPECT().DialContext(mock.Anything, mock.Anything, mock.Anything).Return(conn, nil)
-	dms := download.CreateDownloadManagers(s)
+	bgs := download.CreateBlockGenerators(s)
 	progressPieces := make(chan *event.ProgressPieceDownloaded, 1)
 	return NewManager(
 			IDFromString("-GO0001-randombytes1"),
 			dialer,
 			s,
 			Peer{InfoHash: torrentFile.InfoHash},
-			dms,
+			bgs,
 			make(chan<- *event.ProgressConnRead, 1000000),
 			progressPieces,
 		), fs,
@@ -94,13 +94,13 @@ func createSeedingManager(t *testing.T, conn net.Conn) *Manager {
 	require.NoError(t, err)
 
 	dialer := peer.NewMockContextDialer(t)
-	dms := download.CreateDownloadManagers(s)
+	bgs := download.CreateBlockGenerators(s)
 	return NewManager(
 		IDFromString("-GO0001-randombytes2"),
 		dialer,
 		s,
 		Peer{Conn: conn},
-		dms,
+		bgs,
 		make(chan<- *event.ProgressConnRead, 1000000),
 		make(chan<- *event.ProgressPieceDownloaded, 1000000),
 	)

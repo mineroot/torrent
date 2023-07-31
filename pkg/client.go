@@ -27,7 +27,7 @@ type Client struct {
 	pmsLock           sync.RWMutex
 	pms               peer.Managers
 	connCh            <-chan net.Conn
-	dms               *download.Managers
+	bgs               *download.BlockGenerators
 	progressConnReads chan *event.ProgressConnRead
 	progressSpeed     chan *event.ProgressSpeed
 	progressPieces    chan *event.ProgressPieceDownloaded
@@ -54,13 +54,13 @@ func (c *Client) Run(ctx context.Context) (err error) {
 		return fmt.Errorf("unable to start listener: %w", err)
 	}
 	defer lis.Close()
-	c.dms = download.CreateDownloadManagers(c.storage)
+	c.bgs = download.CreateBlockGenerators(c.storage)
 	c.sendInitialProgress()
 	g, ctx := errgroup.WithContext(ctx)
 	for file := range c.storage.Iterator() {
-		g.Go(utils.WithCtx(ctx, tracker.New(file, c.id, c.port, c.peersCh).Run))
+		g.Go(utils.WithContext(ctx, tracker.New(file, c.id, c.port, c.peersCh).Run))
 	}
-	g.Go(utils.WithCtx(ctx, c.managePeers))
+	g.Go(utils.WithContext(ctx, c.managePeers))
 	go c.calculateDownloadSpeed(ctx) // todo ugly?
 	return g.Wait()
 }
@@ -98,11 +98,11 @@ func (c *Client) managePeers(ctx context.Context) error {
 				Port:     uint16(addr.Port),
 				Conn:     conn,
 			}
-			pm := peer.NewManager(c.id, &net.Dialer{}, c.storage, p, c.dms, c.progressConnReads, c.progressPieces)
+			pm := peer.NewManager(c.id, &net.Dialer{}, c.storage, p, c.bgs, c.progressConnReads, c.progressPieces)
 			c.pmsLock.Lock()
 			c.pms = append(c.pms, pm)
 			c.pmsLock.Unlock()
-			g.Go(utils.WithCtx(ctx, pm.Run))
+			g.Go(utils.WithContext(ctx, pm.Run))
 		case peers, ok := <-c.peersCh:
 			if !ok {
 				return nil
@@ -111,9 +111,9 @@ func (c *Client) managePeers(ctx context.Context) error {
 			for _, p := range peers {
 				foundPms := c.pms.FindAliveByInfoHashAndIp(p.InfoHash, p.IP)
 				if len(foundPms) == 0 {
-					pm := peer.NewManager(c.id, &net.Dialer{}, c.storage, p, c.dms, c.progressConnReads, c.progressPieces)
+					pm := peer.NewManager(c.id, &net.Dialer{}, c.storage, p, c.bgs, c.progressConnReads, c.progressPieces)
 					c.pms = append(c.pms, pm)
-					g.Go(utils.WithCtx(ctx, pm.Run))
+					g.Go(utils.WithContext(ctx, pm.Run))
 				}
 			}
 			c.pmsLock.Unlock()
