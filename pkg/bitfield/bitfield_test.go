@@ -149,3 +149,112 @@ func TestBitfield_DownloadedPiecesCount(t *testing.T) {
 		})
 	}
 }
+
+func TestBitfield_Interested(t *testing.T) {
+	type test struct {
+		name         string
+		bf, bf2      *Bitfield
+		isInterested bool
+		panics       bool
+	}
+	hasFirstPiece := New(10)
+	_ = hasFirstPiece.Set(0)
+
+	hasLastPiece := New(10)
+	_ = hasLastPiece.Set(9)
+
+	hasFirstAndLastPiece := New(10)
+	_ = hasFirstAndLastPiece.Set(0)
+	_ = hasFirstAndLastPiece.Set(9)
+
+	hasAllPieces, err := FromPayload([]byte{0xFF, 0b11000000}, 10)
+	require.NoError(t, err)
+
+	tests := []test{
+		{
+			name:         "piecesCount doesn't match",
+			bf:           New(10),
+			bf2:          New(9),
+			isInterested: false,
+			panics:       true,
+		},
+		{
+			name:         "empty & empty",
+			bf:           New(10),
+			bf2:          New(10),
+			isInterested: false,
+		},
+		{
+			name:         "hasLastPiece & empty",
+			bf:           hasLastPiece,
+			bf2:          New(10),
+			isInterested: false,
+		},
+		{
+			name:         "hasLastPiece & hasLastPiece",
+			bf:           hasLastPiece,
+			bf2:          hasLastPiece,
+			isInterested: false,
+		},
+		{
+			name:         "hasFirstAndLastPiece & hasLastPiece",
+			bf:           hasFirstAndLastPiece,
+			bf2:          hasLastPiece,
+			isInterested: false,
+		},
+		{
+			name:         "hasAllPieces & hasFirstAndLastPiece",
+			bf:           hasAllPieces,
+			bf2:          hasFirstAndLastPiece,
+			isInterested: false,
+		},
+		{
+			name:         "empty & hasLastPiece",
+			bf:           New(10),
+			bf2:          hasLastPiece,
+			isInterested: true,
+		},
+		{
+			name:         "hasFirstPiece & hasLastPiece",
+			bf:           hasFirstPiece,
+			bf2:          hasLastPiece,
+			isInterested: true,
+		},
+		{
+			name:         "hasLastPiece & hasFirstPiece",
+			bf:           hasLastPiece,
+			bf2:          hasFirstPiece,
+			isInterested: true,
+		},
+		{
+			name:         "hasLastPiece & hasFirstAndLastPiece",
+			bf:           hasLastPiece,
+			bf2:          hasFirstAndLastPiece,
+			isInterested: true,
+		},
+		{
+			name:         "empty & hasFirstAndLastPiece",
+			bf:           New(10),
+			bf2:          hasFirstAndLastPiece,
+			isInterested: true,
+		},
+		{
+			name:         "hasFirstAndLastPiece & hasAllPieces",
+			bf:           hasFirstAndLastPiece,
+			bf2:          hasAllPieces,
+			isInterested: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := func() {
+				assert.Equal(t, tt.isInterested, tt.bf.Interested(tt.bf2))
+			}
+			if tt.panics {
+				require.Panics(t, f)
+			} else {
+				require.NotPanics(t, f)
+			}
+		})
+	}
+}

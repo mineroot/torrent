@@ -57,8 +57,8 @@ func (c *Client) Run(ctx context.Context) (err error) {
 	c.bgs = download.CreateBlockGenerators(c.storage)
 	c.sendInitialProgress()
 	g, ctx := errgroup.WithContext(ctx)
-	for file := range c.storage.Iterator() {
-		g.Go(utils.WithContext(ctx, tracker.New(file, c.id, c.port, c.peersCh).Run))
+	for td := range c.storage.Iterator() {
+		g.Go(utils.WithContext(ctx, tracker.New(td.Torrent(), c.id, c.port, c.peersCh).Run))
 	}
 	g.Go(utils.WithContext(ctx, c.managePeers))
 	go c.calculateDownloadSpeed(ctx) // todo ugly?
@@ -75,8 +75,8 @@ func (c *Client) ProgressPieces() <-chan *event.ProgressPieceDownloaded {
 
 func (c *Client) sendInitialProgress() {
 	for t := range c.storage.Iterator() {
-		downloaded := c.storage.GetBitfield(t.InfoHash).DownloadedPiecesCount()
-		c.progressPieces <- event.NewProgressPieceDownloaded(t.InfoHash, downloaded)
+		downloaded := c.storage.Get(t.InfoHash()).Bitfield().DownloadedPiecesCount()
+		c.progressPieces <- event.NewProgressPieceDownloaded(t.InfoHash(), downloaded)
 	}
 }
 

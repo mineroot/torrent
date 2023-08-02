@@ -31,10 +31,9 @@ func (m *BlockGenerators) Load(hashable torrent.Hashable) *BlockGenerator {
 
 func CreateBlockGenerators(storage storage.Reader) *BlockGenerators {
 	blockGenerators := &BlockGenerators{}
-	for t := range storage.Iterator() {
-		bf := storage.GetBitfield(t.InfoHash)
-		blocks := divide.Divide(t.Length, []int{t.PieceLength, BlockSize})
-		blockGenerators.syncMap.Store(t.InfoHash, newBlockGenerator(blocks, bf))
+	for td := range storage.Iterator() {
+		blocks := divide.Divide(int(td.Torrent().TotalLength()), []int{td.Torrent().PieceLength, BlockSize})
+		blockGenerators.syncMap.Store(td.InfoHash(), newBlockGenerator(blocks, td.Bitfield()))
 	}
 	return blockGenerators
 }

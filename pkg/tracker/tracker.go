@@ -123,7 +123,7 @@ func (t *Tracker) buildTrackerURL(event event) (string, error) {
 		"uploaded":   []string{"0"},
 		"downloaded": []string{"0"},
 		"compact":    []string{"1"},
-		"left":       []string{strconv.Itoa(t.torrent.Length)},
+		"left":       []string{strconv.Itoa(int(t.torrent.TotalLength()))}, // TODO ?
 		"event":      []string{string(event)},
 		"numwant":    []string{"100"},
 	}

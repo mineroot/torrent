@@ -62,7 +62,7 @@ func run(*cobra.Command, []string) error {
 	}
 	defer logFile.Close()
 
-	l := log.Output(zerolog.ConsoleWriter{Out: logFile}).With().Caller().Logger().Level(zerolog.InfoLevel)
+	l := log.Output(zerolog.ConsoleWriter{Out: logFile}).With().Caller().Logger().Level(zerolog.DebugLevel)
 
 	s := storage.NewStorage(afero.NewOsFs())
 	for i := 0; i < len(torrents); i++ {

@@ -117,6 +117,23 @@ func (bf *Bitfield) Has(pieceIndex int) bool {
 	return (byteValue & mask) != 0
 }
 
+func (bf *Bitfield) Interested(bf2 *Bitfield) bool {
+	if bf.piecesCount != bf2.piecesCount {
+		panic("invalid bf2")
+	}
+	bf.lock.RLock()
+	bf2.lock.RLock()
+	defer bf.lock.RUnlock()
+	defer bf2.lock.RUnlock()
+	for i, b := range bf.bitfield {
+		// if another bf2 has the piece that this bf hasn't
+		if ^b&bf2.bitfield[i] != 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func (bf *Bitfield) initCompletedBitfield() {
 	hasSpareBytes := bf.piecesCount%bits != 0
 	for i := range bf.bitfield {

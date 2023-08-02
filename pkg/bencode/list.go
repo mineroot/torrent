@@ -31,6 +31,10 @@ func (l *List) Add(item BenType) {
 	l.val = append(l.val, item)
 }
 
+func (l *List) Value() []BenType {
+	return l.val
+}
+
 func (l *List) String() (s string) {
 	for _, benType := range l.val {
 		s += fmt.Sprintf("\t%s\n", benType)

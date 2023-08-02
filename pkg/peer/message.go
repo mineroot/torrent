@@ -51,6 +51,12 @@ func NewInterested() *Message {
 	}
 }
 
+func NewNotInterested() *Message {
+	return &Message{
+		ID: msgNotInterested,
+	}
+}
+
 func NewBitfield(bf *bitfield.Bitfield) *Message {
 	return &Message{
 		ID:      msgBitfield,

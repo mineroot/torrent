@@ -23,14 +23,14 @@ func TestStorage(t *testing.T) {
 		})
 	})
 	t.Run("downloaded file not creates + additional checks", func(t *testing.T) {
-		s, memFs, tFile := setUp(t)
+		s, memFs, torr := setUp(t)
 		// assert downloaded file doesn't exist yet
 		exists, err := afero.Exists(memFs, downloadFilePath)
 		require.NoError(t, err)
 		assert.False(t, exists)
 		// add torrent to storage
 		assert.NotPanics(t, func() {
-			err := s.Set(tFile)
+			err := s.Set(torr)
 			assert.Equal(t, 1, s.Len())
 			require.NoError(t, err)
 		})
@@ -41,16 +41,16 @@ func TestStorage(t *testing.T) {
 		// asser downloaded file filled with zeroes
 		fileBytes, err := afero.ReadFile(memFs, downloadFilePath)
 		require.NoError(t, err)
-		assert.Equal(t, len(fileBytes), tFile.Length)
-		assert.Equal(t, fileBytes, make([]byte, tFile.Length))
-		// assert torrent getter
-		assert.Equal(t, tFile, s.Get(tFile.InfoHash))
+		assert.Equal(t, len(fileBytes), int(torr.TotalLength()))
+		assert.Equal(t, fileBytes, make([]byte, torr.TotalLength()))
+		// assert  getter
+		assert.Equal(t, torr, s.Get(torr.InfoHash).Torrent())
 		// assert file descriptor getter
 		fd, err := memFs.Open(downloadFilePath)
 		require.NoError(t, err)
-		assert.Equal(t, fd.Name(), s.GetFile(tFile.InfoHash).Name())
+		assert.Equal(t, fd.Name(), s.Get(torr.InfoHash).fds[0].Name())
 		// assert bitfield
-		bf := s.GetBitfield(tFile.InfoHash)
+		bf := s.Get(torr.InfoHash).Bitfield()
 		assert.False(t, bf.IsCompleted())
 		assert.Zero(t, bf.DownloadedPiecesCount())
 	})
@@ -62,7 +62,7 @@ func TestStorage(t *testing.T) {
 			assert.Equal(t, 1, s.Len())
 			require.NoError(t, err)
 		})
-		actualBf := s.GetBitfield(tFile.InfoHash)
+		actualBf := s.Get(tFile.InfoHash).Bitfield()
 		assert.Equal(t, bf, actualBf)
 		assert.False(t, actualBf.IsCompleted())
 	})
@@ -74,7 +74,7 @@ func TestStorage(t *testing.T) {
 			assert.Equal(t, 1, s.Len())
 			require.NoError(t, err)
 		})
-		actualBf := s.GetBitfield(tFile.InfoHash)
+		actualBf := s.Get(tFile.InfoHash).Bitfield()
 		assert.Equal(t, bf, actualBf)
 		assert.True(t, actualBf.IsCompleted())
 	})

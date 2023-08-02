@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
-	"github.com/spf13/afero"
 	"golang.org/x/sync/errgroup"
 	"io"
 	"sync"
@@ -33,6 +32,7 @@ type Manager struct {
 	clientId                 ID
 	dialer                   ContextDialer
 	storage                  storage.Reader
+	td                       *storage.TorrentData
 	peer                     Peer
 	incomeMessagesCh         chan *Message
 	outcomeMessageCh         chan *Message
@@ -41,12 +41,9 @@ type Manager struct {
 	firstRequestReceivedOnce sync.Once
 	firstRequestReceived     chan struct{}
 	peerBitfield             *bitfield.Bitfield
-	myBitfield               *bitfield.Bitfield
 	log                      zerolog.Logger
-	torrent                  *torrent.File
 	bgs                      *download.BlockGenerators
 	bg                       *download.BlockGenerator
-	file                     afero.File
 	progressConnReads        chan<- *event.ProgressConnRead
 	progressPieces           chan<- *event.ProgressPieceDownloaded
 	myRequestedBlocks        *download.BlocksSyncMap
@@ -105,28 +102,27 @@ func (pm *Manager) run(ctx context.Context) (err error) {
 		if err = pm.peer.sendHandshake(ctx, pm.dialer, pm.clientId); err != nil {
 			return fmt.Errorf("unable to send handshake too remote peer: %w", err)
 		}
-		pm.torrent = pm.storage.Get(pm.peer.InfoHash)
+		pm.td = pm.storage.Get(pm.peer.InfoHash)
 	} else {
 		// remote peer connected to us, and we are waiting for a handshake
-		if pm.torrent, err = pm.peer.acceptHandshake(ctx, pm.storage, pm.clientId); err != nil {
+		if pm.td, err = pm.peer.acceptHandshake(ctx, pm.storage, pm.clientId); err != nil {
 			return fmt.Errorf("unable to accept handshake from remote peer: %w", err)
 		}
 	}
 	pm.log.Info().Msg("successful handshake")
-
-	pm.file = pm.storage.GetFile(pm.peer.InfoHash)
 	pm.bg = pm.bgs.Load(pm)
-	pm.myBitfield = pm.storage.GetBitfield(pm.peer.InfoHash)
 
-	// todo send this synchronous
-	_ = pm.sendMessage(ctx, NewBitfield(pm.myBitfield))
-	_ = pm.sendMessage(ctx, NewUnChoke())
-	time.Sleep(time.Second)
-	_ = pm.sendMessage(ctx, NewInterested())
-
+	// start writing, reading and handling messages
 	g.Go(pm.readMessages)
 	g.Go(utils.WithContext(ctx, pm.writeMessages))
 	g.Go(utils.WithContext(ctx, pm.handleMessages))
+	_ = pm.sendMessage(ctx, NewBitfield(pm.td.Bitfield()))
+	_ = pm.sendMessage(ctx, NewUnChoke())
+
+	pm.waitForBitfield(ctx)
+	pm.checkAmInterested(ctx)
+
+	// start download/upload
 	g.Go(utils.WithContext(ctx, pm.download))
 	g.Go(utils.WithContext(ctx, pm.upload))
 	return g.Wait()
@@ -197,13 +193,6 @@ func (pm *Manager) writeMessages(ctx context.Context) error {
 }
 
 func (pm *Manager) download(ctx context.Context) error {
-	// wait for bitfield
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-pm.bitfieldReceived:
-	}
-
 	const minGrowFactor = 1
 	growFactor := 4
 	growFunc := func(x int) int {
@@ -221,8 +210,10 @@ func (pm *Manager) download(ctx context.Context) error {
 			return ctx.Err()
 		default:
 		}
-		if pm.amChoking.Load() {
-			time.Sleep(time.Second)
+		if pm.amChoking.Load() || !pm.amInterested.Load() {
+			waitTimer := time.NewTimer(time.Second)
+			<-waitTimer.C
+			waitTimer.Stop()
 			continue
 		}
 
@@ -245,7 +236,7 @@ func (pm *Manager) download(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			if !pm.myBitfield.Has(block.PieceIndex) && pm.peerBitfield.Has(block.PieceIndex) && !pm.myRequestedBlocks.Has(block) {
+			if !pm.td.Bitfield().Has(block.PieceIndex) && pm.peerBitfield.Has(block.PieceIndex) && !pm.myRequestedBlocks.Has(block) {
 				// if we don't have a piece but remote peer has a piece
 				// and we not just yet requested block, then request block
 				message := NewRequest(block)
@@ -280,24 +271,30 @@ func (pm *Manager) upload(ctx context.Context) error {
 		return ctx.Err()
 	case <-pm.firstRequestReceived:
 	}
-	ticker := time.NewTicker(time.Millisecond)
+	ticker := time.NewTicker(2 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
+			if pm.amChoking.Load() || !pm.peerInterested.Load() {
+				waitTimer := time.NewTimer(time.Second)
+				<-waitTimer.C
+				waitTimer.Stop()
+				break
+			}
 			for block := range pm.peerRequestedBlocks.Iterate() {
 				// if block's request was canceled by peer
 				if !pm.peerRequestedBlocks.Has(block) {
 					continue
 				}
-				offset := block.PieceIndex*pm.torrent.PieceLength + block.Begin
-				if offset+block.Len > pm.torrent.Length {
-					block.Len = pm.torrent.Length - offset
+				offset := block.PieceIndex*pm.td.Torrent().PieceLength + block.Begin
+				if offset+block.Len > int(pm.td.Torrent().TotalLength()) {
+					block.Len = int(pm.td.Torrent().TotalLength()) - offset
 				}
 				buf := make([]byte, block.Len)
-				_, err := pm.file.ReadAt(buf, int64(offset))
+				_, err := pm.td.ReadAt(buf, int64(offset))
 				if err != nil {
 					return err
 				}
@@ -331,10 +328,33 @@ func (pm *Manager) handleMessages(ctx context.Context) error {
 				break
 			}
 			//go func() { // TODO: fucking data race in afero
-			if err := handler(pm, message); err != nil {
+			if err := handler(ctx, pm, message); err != nil {
 				cancel(err)
 			}
 			//}()
+		}
+	}
+}
+
+// waitForBitfield waits for bitfield or makes empty if not received in time
+func (pm *Manager) waitForBitfield(ctx context.Context) {
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	select {
+	case <-pm.bitfieldReceived:
+	case <-ctxWithTimeout.Done():
+		_ = msgBitfieldHandler(ctx, pm, NewBitfield(bitfield.New(pm.td.Torrent().PiecesCount())))
+	}
+}
+
+func (pm *Manager) checkAmInterested(ctx context.Context) {
+	isInterested := pm.td.Bitfield().Interested(pm.peerBitfield)
+	wasInterested := pm.amInterested.Swap(isInterested)
+	if isInterested != wasInterested {
+		if isInterested {
+			_ = pm.sendMessage(ctx, NewInterested())
+		} else {
+			_ = pm.sendMessage(ctx, NewNotInterested())
 		}
 	}
 }

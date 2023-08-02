@@ -37,11 +37,11 @@ func CreateApp(
 
 	row := 1
 	rowByHash := make(map[torrent.Hash]int)
-	for file := range s.Iterator() {
-		rowByHash[file.InfoHash] = row
-		table.SetCell(row, 0, tview.NewTableCell(file.TorrentFileName))
-		table.SetCell(row, 1, tview.NewTableCell(utils.FormatBytes(uint(file.Length))))
-		table.SetCell(row, 2, tview.NewTableCell(strconv.Itoa(file.PiecesCount())))
+	for td := range s.Iterator() {
+		rowByHash[td.InfoHash()] = row
+		table.SetCell(row, 0, tview.NewTableCell(td.Torrent().TorrentFileName))
+		table.SetCell(row, 1, tview.NewTableCell(utils.FormatBytes(uint(td.Torrent().TotalLength()))))
+		table.SetCell(row, 2, tview.NewTableCell(strconv.Itoa(td.Torrent().PiecesCount())))
 		table.SetCell(row, 3, tview.NewTableCell("0"))
 		table.SetCell(row, 4, tview.NewTableCell("0 B/s"))
 		table.SetCell(row, 5, tview.NewTableCell(strings.Repeat("□", 20)))
@@ -65,9 +65,9 @@ func CreateApp(
 				table.GetCell(row, 3).SetText(strconv.Itoa(progressPiece.DownloadedCount))
 			})
 
-			file := s.Get(progressPiece.Hash)
+			td := s.Get(progressPiece.Hash)
 			progressBarMaxWidth := 20
-			progressBarMax := file.PiecesCount()
+			progressBarMax := td.Torrent().PiecesCount()
 			progressBarCurrent := progressPiece.DownloadedCount
 			progressBarCurrentWidth := progressBarMaxWidth * progressBarCurrent / progressBarMax
 

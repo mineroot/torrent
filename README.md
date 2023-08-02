@@ -6,4 +6,4 @@
 2. [ ] sending `msgHave`
 3. [ ] sending `completed` event to tracker
 4. [ ] exclude myself from `peers` string when request to tracker
-5. [ ] multiple files support
+5. [x] multiple files support

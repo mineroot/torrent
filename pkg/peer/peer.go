@@ -77,7 +77,7 @@ func (p *Peer) sendHandshake(ctx context.Context, dialer ContextDialer, id ID) (
 	return
 }
 
-func (p *Peer) acceptHandshake(ctx context.Context, storage storage.Reader, id ID) (t *torrent.File, err error) {
+func (p *Peer) acceptHandshake(ctx context.Context, storage storage.Reader, id ID) (t *storage.TorrentData, err error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
